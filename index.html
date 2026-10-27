@@ -410,6 +410,20 @@ const obstacles = [
   { x: 2000, y: 1320, r: 50 },
 ];
 
+// 房间隔墙：把整片空地切成若干「厅」，留门洞连通（元气骑士式的小空间感）
+const WALLS = [
+  { x: 180, y: 470, w: 560, h: 44 },
+  { x: 880, y: 470, w: 420, h: 44 },
+  { x: 1440, y: 470, w: 780, h: 44 },
+  { x: 1080, y: 150, w: 44, h: 320 },
+  { x: 1080, y: 514, w: 44, h: 250 },
+  { x: 260, y: 1050, w: 520, h: 44 },
+  { x: 920, y: 1050, w: 360, h: 44 },
+  { x: 1420, y: 1050, w: 44, h: 380 },
+  { x: 700, y: 1400, w: 600, h: 44 },
+  { x: 1900, y: 760, w: 44, h: 360 },
+];
+
 // ---------------- 全局状态 ----------------
 const game = {
   time: 0,
@@ -596,6 +610,30 @@ function resolveObstacles(ent) {
     if (d < min && d > 0.001) {
       ent.x = o.x + dx / d * min;
       ent.y = o.y + dy / d * min;
+    }
+  }
+  // 矩形墙体：圆对 AABB 的推出
+  for (const w of WALLS) {
+    const cx = clamp(ent.x, w.x, w.x + w.w);
+    const cy = clamp(ent.y, w.y, w.y + w.h);
+    let dx = ent.x - cx;
+    let dy = ent.y - cy;
+    let d = Math.hypot(dx, dy);
+    if (d < 0.001) {
+      // 圆心落在墙内：推向最近的边
+      const left = ent.x - w.x, right = w.x + w.w - ent.x;
+      const top = ent.y - w.y, bottom = w.y + w.h - ent.y;
+      const m = Math.min(left, right, top, bottom);
+      if (m === left) ent.x = w.x - ent.r;
+      else if (m === right) ent.x = w.x + w.w + ent.r;
+      else if (m === top) ent.y = w.y - ent.r;
+      else ent.y = w.y + w.h + ent.r;
+      continue;
+    }
+    if (d < ent.r) {
+      const push = (ent.r - d) / d;
+      ent.x += dx * push;
+      ent.y += dy * push;
     }
   }
   ent.x = clamp(ent.x, ent.r, WORLD.w - ent.r);
@@ -2539,6 +2577,58 @@ function drawGroundDecor() {
     if (!visible(d.x, d.y)) continue;
     if (d.type === 'tree') drawTree(d);
     else drawDecorItem(d);
+  }
+}
+
+function drawWalls() {
+  for (const w of WALLS) {
+    if (!visible(w.x + w.w * 0.5, w.y + w.h * 0.5, Math.max(w.w, w.h) * 0.7)) continue;
+    const horiz = w.w >= w.h;
+    // 落地投影
+    G.fillStyle = 'rgba(0,0,0,0.38)';
+    G.fillRect(w.x + 6, w.y + 10, w.w, w.h);
+    // 墙基
+    G.fillStyle = '#2e3136';
+    G.fillRect(w.x, w.y, w.w, w.h);
+    // 顶面亮带（俯视能看到的厚度）
+    if (horiz) {
+      G.fillStyle = '#5d646f';
+      G.fillRect(w.x, w.y, w.w, 13);
+      G.fillStyle = '#767f8d';
+      G.fillRect(w.x, w.y, w.w, 5);
+    } else {
+      G.fillStyle = '#5d646f';
+      G.fillRect(w.x, w.y, 13, w.h);
+      G.fillStyle = '#767f8d';
+      G.fillRect(w.x, w.y, 5, w.h);
+    }
+    // 石块砌缝
+    G.fillStyle = '#3b3f46';
+    const blk = 24;
+    if (horiz) {
+      for (let x = w.x + 2; x < w.x + w.w - 2; x += blk) {
+        G.fillRect(x, w.y + 14, Math.min(blk - 3, w.x + w.w - 2 - x), w.h - 18);
+      }
+      G.fillStyle = 'rgba(14,16,19,0.55)';
+      for (let x = w.x + blk; x < w.x + w.w - 2; x += blk) G.fillRect(x - 1, w.y + 14, 2, w.h - 18);
+    } else {
+      for (let y = w.y + 2; y < w.y + w.h - 2; y += blk) {
+        G.fillRect(w.x + 14, y, w.w - 18, Math.min(blk - 3, w.y + w.h - 2 - y));
+      }
+      G.fillStyle = 'rgba(14,16,19,0.55)';
+      for (let y = w.y + blk; y < w.y + w.h - 2; y += blk) G.fillRect(w.x + 14, y - 1, w.w - 18, 2);
+    }
+    // 背光暗边
+    G.fillStyle = 'rgba(0,0,0,0.42)';
+    if (horiz) G.fillRect(w.x, w.y + w.h - 4, w.w, 4);
+    else G.fillRect(w.x + w.w - 4, w.y, 4, w.h);
+    // 顶上苔藓
+    G.fillStyle = 'rgba(82,108,70,0.52)';
+    if (horiz) {
+      for (let x = w.x + 5; x < w.x + w.w - 5; x += 39) G.fillRect(x, w.y - 1, 7, 2);
+    } else {
+      for (let y = w.y + 5; y < w.y + w.h - 5; y += 39) G.fillRect(w.x - 1, y, 2, 7);
+    }
   }
 }
 
@@ -4632,6 +4722,7 @@ function render() {
   drawFloor();
   drawGroundDecor();
   drawObstacles();
+  drawWalls();
   drawLighting();
   drawBonfire();
   drawVendor();

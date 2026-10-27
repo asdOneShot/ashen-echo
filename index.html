@@ -24,7 +24,7 @@
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="hint">WASD 移动 · J 攻击（长弓/铳为射击）· Q 或 1-8 换武器 · 攻击中接 K 突进斩 / J→J→K 回旋斩 · L/右键 举盾格挡（起手瞬间挡中=完美格挡） · K 翻滚 · Shift 冲刺 · F 复仇之魂 · R 饮原素瓶 · Tab 锁定 · E 休息 / 交易 · 滚轮或 +/− 调视野</div>
+<div id="hint">WASD 移动 · J 攻击（长弓/铳为射击）· Q 或 1-8 换武器 · 攻击中接 K 突进斩 / J→J→K 回旋斩 · L/右键 举盾格挡（起手瞬间挡中=完美格挡） · K 翻滚 · Shift 冲刺 · F 复仇之魂 · R 饮原素瓶 · Tab 锁定 · E 休息 / 交易 · Esc 按键设置 · 滚轮或 +/− 调视野</div>
 <script>
 'use strict';
 
@@ -56,6 +56,13 @@ let W = 0, H = 0;
 const DPR = Math.min(2, window.devicePixelRatio || 1);
 const touch = { joyId: null, joyX: 0, joyY: 0, joyCX: 0, joyCY: 0, active: false };
 const TOUCH_BTNS = [];
+const MOBILE_PRESETS = [
+  { id: 'right', name: '右手主控', desc: '摇杆在左，技能键在右下' },
+  { id: 'left', name: '左手主控', desc: '摇杆在右，技能键在左下' },
+  { id: 'compact', name: '紧凑', desc: '按钮缩小、贴近边缘' },
+];
+let mobileLayout = 'right';
+try { mobileLayout = localStorage.getItem('ashen_layout') || 'right'; } catch (e) {}
 
 // ---------------- 视野缩放 ----------------
 let zoom = 1.15;        // 当前缩放（1.15 = 默认视野，比 1.0 略近）
@@ -83,25 +90,113 @@ window.addEventListener('resize', resize);
 const keys = Object.create(null);
 const pressed = Object.create(null);
 
+// ---------------- 按键绑定 ----------------
+const ACTIONS = [
+  { id: 'attack', name: '攻击 / 射击', alias: 'j' },
+  { id: 'roll', name: '翻滚', alias: 'k' },
+  { id: 'dash', name: '冲刺', alias: 'shift' },
+  { id: 'block', name: '举盾格挡', alias: 'l' },
+  { id: 'spell', name: '复仇之魂', alias: 'f' },
+  { id: 'flask', name: '饮原素瓶', alias: 'r' },
+  { id: 'interact', name: '交互 / 长椅', alias: 'e' },
+  { id: 'lock', name: '锁定目标', alias: 'tab' },
+  { id: 'cycle', name: '切换武器', alias: 'q' },
+];
+const DEFAULT_BINDS = { attack: 'j', roll: 'k', dash: 'shift', block: 'l', spell: 'f', flask: 'r', interact: 'e', lock: 'tab', cycle: 'q' };
+let BINDS = Object.assign({}, DEFAULT_BINDS);
+try {
+  const rawB = localStorage.getItem('ashen_binds');
+  if (rawB) BINDS = Object.assign({}, DEFAULT_BINDS, JSON.parse(rawB));
+} catch (e) {}
+function saveBinds() {
+  try { localStorage.setItem('ashen_binds', JSON.stringify(BINDS)); } catch (e) {}
+}
+const KEY_LABEL = { ' ': '空格', shift: 'Shift', tab: 'Tab', escape: 'Esc', control: 'Ctrl', alt: 'Alt', arrowup: '↑', arrowdown: '↓', arrowleft: '←', arrowright: '→' };
+function keyLabel(k) { return KEY_LABEL[k] || (k.length === 1 ? k.toUpperCase() : k); }
+function actionOfKey(k) {
+  for (const a of ACTIONS) if (BINDS[a.id] === k) return a;
+  return null;
+}
+function bindKey(id, k) {
+  const owner = actionOfKey(k);
+  if (owner && owner.id !== id) {
+    const tmp = BINDS[id];
+    BINDS[id] = k;
+    BINDS[owner.id] = tmp;
+  } else {
+    BINDS[id] = k;
+  }
+  saveBinds();
+}
+
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
+  initAudio();
+  if (k === ' ' || k === 'tab' || k.startsWith('arrow')) e.preventDefault();
+  // 设置面板：等待新按键
+  if (game.settings) {
+    if (game.settings.waiting) {
+      e.preventDefault();
+      if (k === 'escape') { game.settings.waiting = null; return; }
+      bindKey(game.settings.waiting, k);
+      game.settings.waiting = null;
+      game.settings.msg = '已改为 ' + keyLabel(k);
+      return;
+    }
+    if (k === 'escape') { closeSettings(); return; }
+    if (!keys[k]) pressed[k] = true;
+    keys[k] = true;
+    return;
+  }
+  if (k === 'escape' && game.state !== 'shop') { openSettings(); return; }
+  // 自定义键 → 原始逻辑键
+  const act = actionOfKey(k);
+  if (act) {
+    if (!keys[act.alias]) pressed[act.alias] = true;
+    keys[act.alias] = true;
+  }
   if (!keys[k]) pressed[k] = true;
   keys[k] = true;
-  if (k === ' ' || k === 'tab' || k.startsWith('arrow')) e.preventDefault();
   if (k === '=' || k === '+' || k === ']') bumpZoom(1.12);
   if (k === '-' || k === '_' || k === '[') bumpZoom(1 / 1.12);
   if (k === '0') zoomTarget = ZOOM_DEFAULT;
-  initAudio();
 });
 window.addEventListener('keyup', (e) => {
-  keys[e.key.toLowerCase()] = false;
+  const k = e.key.toLowerCase();
+  keys[k] = false;
+  const act = actionOfKey(k);
+  if (act) keys[act.alias] = false;
 });
 window.addEventListener('blur', () => {
   for (const k in keys) keys[k] = false;
 });
 canvas.addEventListener('mousedown', (e) => {
   initAudio();
-  if (e.button === 0) pressed['mouse'] = true;
+  if (e.button === 0) {
+    const mx = e.clientX;
+    const my = e.clientY;
+    const gb = game.gearBtn;
+    if (gb && Math.hypot(mx - gb.x, my - gb.y) < gb.r + 6) {
+      if (game.settings) closeSettings(); else openSettings();
+      return;
+    }
+    if (game.settings) {
+      const st = game.settings;
+      if (st.waiting) { st.waiting = null; return; }
+      for (const h of (st.hit || [])) {
+        if (mx >= h.x && mx <= h.x + h.w && my >= h.y && my <= h.y + h.h) {
+          st.sel = h.i;
+          if (h.i < ACTIONS.length) st.waiting = ACTIONS[h.i].id;
+          else if (h.i === ACTIONS.length) resetBinds();
+          else if (h.i === ACTIONS.length + 1) cycleLayout();
+          else closeSettings();
+          return;
+        }
+      }
+      return;
+    }
+    pressed['mouse'] = true;
+  }
   if (e.button === 2) keys['mouse2'] = true;
 });
 window.addEventListener('mouseup', (e) => {
@@ -116,19 +211,24 @@ canvas.addEventListener('wheel', (e) => {
 // ---------------- 触屏（手机虚拟摇杆 + 按键） ----------------
 function layoutTouchButtons() {
   TOUCH_BTNS.length = 0;
-  const R = Math.max(28, Math.min(W, H) * 0.062);
-  const cx = W - R * 1.7;
+  const compact = mobileLayout === 'compact';
+  const lefty = mobileLayout === 'left';
+  const R = Math.max(compact ? 24 : 28, Math.min(W, H) * (compact ? 0.052 : 0.062));
+  const sgn = lefty ? -1 : 1;
+  const cx = lefty ? R * 1.7 : W - R * 1.7;
   const cy = H - R * 1.7;
+  const px2 = (dx) => cx + sgn * dx;
   TOUCH_BTNS.push({ key: 'j', label: '斩', x: cx, y: cy, r: R * 1.3, col: '#dce6f5', fill: 'rgba(58,78,108,0.6)' });
   TOUCH_BTNS.push({ key: 'shift', label: '冲', x: cx, y: cy - R * 3.1, r: R, col: '#9fdcf5', fill: 'rgba(40,70,100,0.55)' });
-  TOUCH_BTNS.push({ key: 'k', label: '滚', x: cx - R * 2.7, y: cy, r: R, col: '#b8c8dc', fill: 'rgba(50,64,90,0.55)' });
-  TOUCH_BTNS.push({ key: 'f', label: '魂', x: cx - R * 2.5, y: cy - R * 2.8, r: R * 0.95, col: '#c8b0ff', fill: 'rgba(62,52,104,0.55)' });
-  TOUCH_BTNS.push({ key: 'r', label: '瓶', x: cx - R * 4.6, y: cy + R * 0.1, r: R * 0.85, col: '#f0b98a', fill: 'rgba(92,62,42,0.55)' });
-  TOUCH_BTNS.push({ key: 'e', label: 'E', x: cx - R * 4.4, y: cy - R * 2.4, r: R * 0.85, col: '#ffd89a', fill: 'rgba(92,76,42,0.55)' });
-  TOUCH_BTNS.push({ key: 'block', label: '挡', x: cx - R * 4.5, y: cy - R * 4.3, r: R * 0.95, col: '#b6e0ff', fill: 'rgba(46,72,96,0.6)' });
-  // 视野缩放（放在右上角，避开战斗区）
-  TOUCH_BTNS.push({ key: 'zoomin', label: '＋', x: W - R * 1.2, y: R * 1.7, r: R * 0.78, col: '#cfe0f0', fill: 'rgba(40,54,74,0.5)' });
-  TOUCH_BTNS.push({ key: 'zoomout', label: '－', x: W - R * 3.1, y: R * 1.7, r: R * 0.78, col: '#cfe0f0', fill: 'rgba(40,54,74,0.5)' });
+  TOUCH_BTNS.push({ key: 'k', label: '滚', x: px2(-R * 2.7), y: cy, r: R, col: '#b8c8dc', fill: 'rgba(50,64,90,0.55)' });
+  TOUCH_BTNS.push({ key: 'f', label: '魂', x: px2(-R * 2.5), y: cy - R * 2.8, r: R * 0.95, col: '#c8b0ff', fill: 'rgba(62,52,104,0.55)' });
+  TOUCH_BTNS.push({ key: 'r', label: '瓶', x: px2(-R * 4.6), y: cy + R * 0.1, r: R * 0.85, col: '#f0b98a', fill: 'rgba(92,62,42,0.55)' });
+  TOUCH_BTNS.push({ key: 'e', label: 'E', x: px2(-R * 4.4), y: cy - R * 2.4, r: R * 0.85, col: '#ffd89a', fill: 'rgba(92,76,42,0.55)' });
+  TOUCH_BTNS.push({ key: 'block', label: '挡', x: px2(-R * 4.5), y: cy - R * 4.3, r: R * 0.95, col: '#b6e0ff', fill: 'rgba(46,72,96,0.6)' });
+  // 视野缩放（放在另一端角落，避开战斗区）
+  const zx = lefty ? W - R * 1.2 : W - R * 1.2;
+  TOUCH_BTNS.push({ key: 'zoomin', label: '＋', x: zx, y: R * 1.7, r: R * 0.78, col: '#cfe0f0', fill: 'rgba(40,54,74,0.5)' });
+  TOUCH_BTNS.push({ key: 'zoomout', label: '－', x: zx - R * 1.9, y: R * 1.7, r: R * 0.78, col: '#cfe0f0', fill: 'rgba(40,54,74,0.5)' });
 }
 function inButton(x, y) {
   for (const b of TOUCH_BTNS) {
@@ -140,6 +240,28 @@ canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
   initAudio();
   for (const t of e.changedTouches) {
+    const gb = game.gearBtn;
+    if (gb && Math.hypot(t.clientX - gb.x, t.clientY - gb.y) < gb.r + 12) {
+      if (game.settings) closeSettings(); else openSettings();
+      continue;
+    }
+    if (game.settings) {
+      const st = game.settings;
+      if (st.waiting) { st.waiting = null; continue; }
+      let done = false;
+      for (const h of (st.hit || [])) {
+        if (t.clientX >= h.x && t.clientX <= h.x + h.w && t.clientY >= h.y && t.clientY <= h.y + h.h) {
+          st.sel = h.i;
+          if (h.i < ACTIONS.length) st.waiting = ACTIONS[h.i].id;
+          else if (h.i === ACTIONS.length) resetBinds();
+          else if (h.i === ACTIONS.length + 1) cycleLayout();
+          else closeSettings();
+          done = true;
+          break;
+        }
+      }
+      if (done) continue;
+    }
     const b = inButton(t.clientX, t.clientY);
     if (b) {
       pressed[b.key] = true;
@@ -147,7 +269,7 @@ canvas.addEventListener('touchstart', (e) => {
       b.flash = 0.12;
       continue;
     }
-    if (t.clientX < W * 0.5 && t.clientY > H * 0.45 && touch.joyId === null) {
+    if (mobileLayout === 'left' ? (t.clientX > W * 0.5 && t.clientY > H * 0.45 && touch.joyId === null) : (t.clientX < W * 0.5 && t.clientY > H * 0.45 && touch.joyId === null)) {
       touch.joyId = t.identifier;
       touch.joyCX = t.clientX;
       touch.joyCY = t.clientY;
@@ -297,6 +419,8 @@ const game = {
   shopSel: 0,
   shopMsg: null,
   shopMsgT: 0,
+  comboHud: null,
+  settings: null,
 };
 
 let player = null;
@@ -973,7 +1097,13 @@ function playerAttackHit() {
     game.hitStop = p.combo === 2 ? 0.1 : 0.055;
     game.shake = Math.max(game.shake, c.shake);
     addEffect(makeSlashEffect(cx, cy, p.facing));
-    if (p.combo === 2) addEffect(makeShockwave(cx, cy, '#ffe6b0'));
+    addEffect({ kind: 'spark', x: cx, y: cy, life: 0.24, maxLife: 0.24, ang: p.facing, color: p.combo === 2 ? '#ffd9a0' : '#cfeaff' });
+    if (p.combo === 2) {
+      addEffect(makeShockwave(cx, cy, '#ffe6b0'));
+      game.comboHud = { t: 0.9, n: 3 };
+    } else {
+      game.comboHud = { t: 0.55, n: p.combo + 1 };
+    }
   }
 }
 
@@ -1292,6 +1422,11 @@ function updatePlayer(dt) {
       p.y += iy * p.speed * dt;
       p.state = 'walk';
       p.walkPhase += dt * 10;
+      p.stepT = (p.stepT || 0) - dt;
+      if (p.stepT <= 0) {
+        p.stepT = 0.27;
+        addEffect({ kind: 'puff', x: p.x + Math.cos(p.facing) * 4, y: p.y + 7, life: 0.34, maxLife: 0.34, color: '#8b8272' });
+      }
     } else {
       p.state = 'idle';
     }
@@ -1456,6 +1591,43 @@ function closeShop() {
   game.state = 'playing';
   game.shopMsg = null;
   game.shopMsgT = 0;
+}
+
+// ---------------- 设置：键位与手机布局 ----------------
+function openSettings() {
+  game.settings = { sel: 0, waiting: null, msg: '', msgT: 2.2, hit: [] };
+  sfx.bonfire();
+}
+function closeSettings() {
+  game.settings = null;
+}
+function resetBinds() {
+  BINDS = Object.assign({}, DEFAULT_BINDS);
+  saveBinds();
+  if (game.settings) game.settings.msg = '已恢复默认键位';
+}
+function cycleLayout() {
+  const i = MOBILE_PRESETS.findIndex(p => p.id === mobileLayout);
+  mobileLayout = MOBILE_PRESETS[(i + 1) % MOBILE_PRESETS.length].id;
+  try { localStorage.setItem('ashen_layout', mobileLayout); } catch (e) {}
+  layoutTouchButtons();
+  if (game.settings) game.settings.msg = '手机布局：' + MOBILE_PRESETS.find(p => p.id === mobileLayout).name;
+}
+function updateSettings(dt) {
+  const st = game.settings;
+  if (!st) return;
+  if (st.msg && st.msgT > 0) st.msgT -= dt;
+  if (st.waiting) return;
+  const n = ACTIONS.length + 3;
+  if (pressed['w'] || pressed['arrowup']) { st.sel = (st.sel + n - 1) % n; st.msg = ''; }
+  if (pressed['s'] || pressed['arrowdown']) { st.sel = (st.sel + 1) % n; st.msg = ''; }
+  if (pressed['j'] || pressed['enter'] || pressed[' ']) {
+    if (st.sel < ACTIONS.length) st.waiting = ACTIONS[st.sel].id;
+    else if (st.sel === ACTIONS.length) resetBinds();
+    else if (st.sel === ACTIONS.length + 1) cycleLayout();
+    else closeSettings();
+  }
+  if (pressed['tab']) { st.sel = 0; }
 }
 
 function buyItem(it) {
@@ -1879,6 +2051,14 @@ function update(dt) {
   if (game.toast) {
     game.toast.t -= dt;
     if (game.toast.t <= 0) game.toast = null;
+  }
+  if (game.comboHud) {
+    game.comboHud.t -= dt;
+    if (game.comboHud.t <= 0) game.comboHud = null;
+  }
+  if (game.settings) {
+    updateSettings(dt);
+    return;
   }
 
   if (game.state === 'dead') {
@@ -2557,11 +2737,19 @@ function drawArt(img, x, y, flipX, scale, flash, whiteImg) {
 // 手上的兵器：按武器类型分别绘制
 function drawWeapon(p, ang) {
   const kind = wpnKind();
-  const ox = p.x + Math.cos(p.facing) * 8;
-  const oy = p.y + Math.sin(p.facing) * 8 + 2;
+  let wx = 0, wy = 0, wrot = 0;
+  if (p.state === 'walk') {
+    const ph = p.walkPhase;
+    const step = Math.abs(Math.sin(ph));
+    wx = Math.cos(ph) * 0.8;
+    wy = -step * 1.8;
+    wrot = Math.sin(ph) * 0.035 * (Math.cos(p.facing) < 0 ? -1 : 1);
+  }
+  const ox = p.x + Math.cos(p.facing) * 8 + wx;
+  const oy = p.y + Math.sin(p.facing) * 8 + 2 + wy;
   G.save();
   G.translate(ox, oy);
-  G.rotate(ang);
+  G.rotate(ang + wrot);
   if (kind === 'spear') {
     px(-9, -1, 31, 3, '#3b4657');
     px(-9, 0, 30, 1, '#8a6a34');
@@ -2676,7 +2864,7 @@ function drawPlayer() {
   }
 
   // 剑的挥动角度（按连招段决定挥砍方向与幅度）
-  let swordAng = p.facing + 0.85;
+  let swordAng = p.facing + 0.5;
   if (p.state === 'attack') {
     const c = COMBO[p.combo] || COMBO[0];
     const t = p.stateT;
@@ -2738,22 +2926,44 @@ function drawPlayer() {
     G.restore();
   }
 
-  // 挥砍弧光
+  // 挥砍刀光：跟在剑后的一段细长月牙，随挥动扫出去
   if (p.state === 'attack') {
     const c = COMBO[p.combo] || COMBO[0];
-    const k = clamp(p.stateT / (c.hitAt + 0.14), 0, 1);
-    if (k > 0.1 && k < 0.96) {
-      const a = Math.sin(k * Math.PI);
+    const t = p.stateT;
+    const wind = Math.min(c.hitAt, 0.11);
+    if (t > wind * 0.5) {
+      const k = clamp((t - wind * 0.5) / 0.24, 0, 1);
+      const dir = c.spin >= 0 ? 1 : -1;
+      const sweep = Math.min(1.45, Math.abs(swordAng - (p.facing + dir * c.arc * 0.55)));
+      const hi = swordAng;
+      const lo = hi - dir * sweep;
+      const r = c.reach * (1.08 + 0.22 * k);
+      const fade = 1 - k * 0.7;
+      const heavy = p.combo === 2;
       G.save();
-      G.globalAlpha = 0.42 * a;
-      G.strokeStyle = '#dff2ff';
-      G.lineWidth = 2;
+      G.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 3; i++) {
+        const rr = r * (1 - i * 0.1);
+        const inner = rr * (0.66 - i * 0.04);
+        G.globalAlpha = (heavy ? 0.9 : 0.7) * (1 - i * 0.24) * fade;
+        G.fillStyle = heavy ? '#ffd9a0' : '#bfe8ff';
+        G.beginPath();
+        G.arc(p.x, p.y, rr, lo, hi, dir < 0);
+        G.arc(p.x, p.y, inner, hi, lo, dir > 0);
+        G.closePath();
+        G.fill();
+      }
+      // 刃口亮线
+      G.globalAlpha = fade;
+      G.strokeStyle = '#ffffff';
+      G.lineWidth = heavy ? 3 : 2;
       G.beginPath();
-      G.arc(p.x, p.y, c.reach * (0.72 + 0.2 * k), p.facing - c.arc * 0.42, p.facing + c.arc * 0.42);
+      G.arc(p.x, p.y, r, lo + dir * 0.05, hi - dir * 0.05, dir < 0);
       G.stroke();
-      G.globalAlpha = 0.22 * a;
-      G.lineWidth = 5;
-      G.strokeStyle = '#9fd0ee';
+      // 外缘余辉
+      G.globalAlpha = 0.34 * fade;
+      G.strokeStyle = heavy ? '#ffb070' : '#8fd0f5';
+      G.lineWidth = heavy ? 9 : 6;
       G.stroke();
       G.restore();
     }
@@ -2768,6 +2978,16 @@ function drawPlayer() {
       G.translate(p.x, p.y + 1);
       G.rotate(p.stateT * 14 * flip);
       G.translate(-p.x, -(p.y + 1));
+    } else if (p.state === 'walk') {
+      // 走路：上下小跳 + 身体轻摆 + 横向晃 + 踏步压缩，避免整张贴图平移的僵硬感
+      const ph = p.walkPhase;
+      const step = Math.abs(Math.sin(ph));
+      G.translate(0, -step * 1.8);
+      G.translate(p.x, p.y + 1);
+      G.rotate(Math.sin(ph) * 0.035 * flip);
+      G.scale(1 + step * 0.035, 1 - step * 0.05);
+      G.translate(-p.x, -(p.y + 1));
+      G.translate(Math.cos(ph) * 0.8, 0);
     }
     drawArt(artP, p.x, p.y + 1, flip < 0, 1.0, p.flash > 0, ART_W.knight);
     G.restore();
@@ -3180,16 +3400,60 @@ function drawBoss() {
 function drawProjectiles() {
   for (const s of projectiles) {
     const a = clamp(s.life / s.maxLife, 0, 1);
-    // 拖尾
-    for (let i = 1; i <= 4; i++) {
-      G.globalAlpha = 0.22 * a * (1 - i / 5);
-      px(s.x - s.vx * i * 0.006 - 2, s.y - s.vy * i * 0.006 - 2, 5, 5, '#78dcff');
+    const ang = Math.atan2(s.vy, s.vx);
+    G.save();
+    G.globalCompositeOperation = 'lighter';
+    // 长拖尾：沿速度方向铺一串渐隐光斑
+    const n = 7;
+    for (let i = 1; i <= n; i++) {
+      const tx = s.x - Math.cos(ang) * i * 9;
+      const ty = s.y - Math.sin(ang) * i * 9;
+      const kk = 1 - i / (n + 1);
+      const rr = s.r * (1.5 - i * 0.12);
+      G.globalAlpha = 0.22 * a * kk;
+      const g2 = G.createRadialGradient(tx, ty, 0, tx, ty, rr);
+      g2.addColorStop(0, 'rgba(210,248,255,0.95)');
+      g2.addColorStop(1, 'rgba(70,160,225,0)');
+      G.fillStyle = g2;
+      G.beginPath();
+      G.arc(tx, ty, rr, 0, TAU);
+      G.fill();
     }
-    G.globalAlpha = 0.85;
-    px(s.x - 6, s.y - 6, 12, 12, 'rgba(70,170,230,0.55)');
-    px(s.x - 4, s.y - 4, 8, 8, 'rgba(160,235,255,0.9)');
-    px(s.x - 2, s.y - 2, 4, 4, '#ffffff');
-    G.globalAlpha = 1;
+    // 核心光球
+    const core = G.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r * 1.9);
+    core.addColorStop(0, '#ffffff');
+    core.addColorStop(0.32, 'rgba(180,242,255,0.95)');
+    core.addColorStop(0.7, 'rgba(90,185,235,0.5)');
+    core.addColorStop(1, 'rgba(50,140,210,0)');
+    G.globalAlpha = 0.95;
+    G.fillStyle = core;
+    G.beginPath();
+    G.arc(s.x, s.y, s.r * 1.9, 0, TAU);
+    G.fill();
+    // 两圈反向旋转的能量弧
+    for (let k = 0; k < 2; k++) {
+      const rr = s.r * (1.7 + k * 0.75);
+      const sp = game.time * (k ? -7 : 6);
+      G.globalAlpha = (k ? 0.55 : 0.8) * a;
+      G.strokeStyle = k ? 'rgba(150,225,255,0.8)' : 'rgba(255,255,255,0.92)';
+      G.lineWidth = k ? 1.6 : 2.4;
+      G.beginPath();
+      G.arc(s.x, s.y, rr, sp, sp + 2.1);
+      G.stroke();
+      G.beginPath();
+      G.arc(s.x, s.y, rr, sp + Math.PI, sp + Math.PI + 1.3);
+      G.stroke();
+    }
+    // 地面光斑
+    G.globalAlpha = 0.22 * a;
+    const gp = G.createRadialGradient(s.x, s.y + s.r, 0, s.x, s.y + s.r, s.r * 2.4);
+    gp.addColorStop(0, 'rgba(140,220,255,0.5)');
+    gp.addColorStop(1, 'rgba(80,170,230,0)');
+    G.fillStyle = gp;
+    G.beginPath();
+    G.ellipse(s.x, s.y + s.r * 0.9, s.r * 2.4, s.r * 1.2, 0, 0, TAU);
+    G.fill();
+    G.restore();
   }
 }
 
@@ -3198,20 +3462,53 @@ function drawEffects() {
     const t = 1 - e.life / e.maxLife;
     G.save();
     if (e.kind === 'slash') {
-      G.globalAlpha = 1 - t;
+      const k = 1 - t;
       G.translate(e.x, e.y);
       G.rotate(e.ang);
-      G.strokeStyle = e.color;
-      G.lineWidth = 4 * e.scale;
+      G.globalCompositeOperation = 'lighter';
+      const R = 48 * e.scale;
+      const a0 = -1.0 + t * 0.55;
+      const a1 = 1.0 + t * 0.55;
+      for (let i = 0; i < 3; i++) {
+        const rr = R * (1 - i * 0.17);
+        const inner = rr * 0.42;
+        G.globalAlpha = (0.55 - i * 0.14) * k;
+        G.fillStyle = e.color;
+        G.beginPath();
+        G.arc(0, 0, rr, a0, a1, false);
+        G.arc(0, 0, inner, a1, a0, true);
+        G.closePath();
+        G.fill();
+      }
+      G.globalAlpha = 0.95 * k;
+      G.strokeStyle = '#ffffff';
+      G.lineWidth = 2;
       G.beginPath();
-      G.arc(0, 0, 46 * e.scale, -0.9 + t * 0.5, 0.9 + t * 0.5);
+      G.arc(0, 0, R, a0 + 0.12, a1 - 0.12);
       G.stroke();
+    } else if (e.kind === 'spark') {
+      G.translate(e.x, e.y);
+      G.globalCompositeOperation = 'lighter';
+      G.globalAlpha = 1 - t;
+      G.strokeStyle = e.color;
+      G.lineWidth = 2;
+      const R2 = 8 + t * 26;
+      for (let i = 0; i < 6; i++) {
+        const a = i / 6 * TAU + e.ang;
+        G.beginPath();
+        G.moveTo(Math.cos(a) * R2 * 0.45, Math.sin(a) * R2 * 0.45);
+        G.lineTo(Math.cos(a) * R2, Math.sin(a) * R2);
+        G.stroke();
+      }
     } else if (e.kind === 'shock') {
       G.globalAlpha = (1 - t) * 0.9;
       G.strokeStyle = e.color;
       G.lineWidth = 4;
       G.beginPath();
       G.arc(e.x, e.y, 20 + t * 160, 0, TAU);
+      G.stroke();
+      G.globalAlpha = (1 - t) * 0.35;
+      G.lineWidth = 9;
       G.stroke();
     } else if (e.kind === 'puff') {
       G.globalAlpha = 1 - t;
@@ -3338,6 +3635,27 @@ function drawUI() {
   ctx.fillStyle = av > 0 ? 'rgba(150,205,250,0.9)' : 'rgba(150,160,170,0.5)';
   ctx.fillText('护甲 ' + av, x + stamW + 8, stamY + 46);
 
+  // 连招提示：命中时在画面中上方弹出
+  if (game.comboHud && game.comboHud.t > 0) {
+    const hd = game.comboHud;
+    const k = clamp(1 - hd.t / 0.9, 0, 1);
+    const sc = 1 + (1 - k) * 0.6;
+    const fade = clamp(hd.t / 0.3, 0, 1);
+    const label = hd.n >= 3 ? '三连 · 重斩' : (hd.n === 2 ? '二连斩' : '一斩');
+    ctx.save();
+    ctx.globalAlpha = fade;
+    ctx.translate(W / 2, H * 0.28);
+    ctx.scale(sc, sc);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 27px "Microsoft YaHei", Georgia, serif';
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(8,10,14,0.88)';
+    ctx.strokeText(label, 0, 0);
+    ctx.fillStyle = hd.n >= 3 ? '#ffd9a0' : '#dceeff';
+    ctx.fillText(label, 0, 0);
+    ctx.restore();
+  }
+
   // 原素瓶
   const flaskY = y + 68;
   for (let i = 0; i < p.maxFlasks; i++) {
@@ -3424,6 +3742,113 @@ function drawUI() {
 
   // 商店面板
   if (game.state === 'shop') drawShop();
+  // 设置面板
+  if (game.settings) drawSettings();
+  // 齿轮按钮（触屏与鼠标都能点）
+  drawGearBtn();
+}
+
+function drawGearBtn() {
+  const r = IS_TOUCH ? 20 : 16;
+  const bx = W - r - 16;
+  const by = r + 16;
+  ctx.save();
+  ctx.globalAlpha = game.settings ? 0.35 : 0.72;
+  ctx.beginPath();
+  ctx.arc(bx, by, r, 0, TAU);
+  ctx.fillStyle = 'rgba(14,16,20,0.72)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(200,215,235,0.55)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(215,228,245,0.92)';
+  ctx.font = Math.round(r * 1.05) + 'px "Segoe UI Symbol", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('⚙', bx, by + 1);
+  ctx.restore();
+  game.gearBtn = { x: bx, y: by, r };
+}
+
+function drawSettings() {
+  const st = game.settings;
+  const pw = Math.min(560, W - 60);
+  const rows = ACTIONS.length + 3;
+  const ph = Math.min(H - 70, rows * 34 + 150);
+  const ox = (W - pw) / 2;
+  const oy = (H - ph) / 2;
+  st.hit = [];
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(4,5,7,0.72)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(18,20,24,0.96)';
+  ctx.fillRect(ox, oy, pw, ph);
+  ctx.strokeStyle = 'rgba(150,170,195,0.42)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(ox + 0.5, oy + 0.5, pw - 1, ph - 1);
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#e7eefa';
+  ctx.font = 'bold 20px "Microsoft YaHei", Georgia, serif';
+  ctx.fillText('按键设置', ox + 24, oy + 40);
+  ctx.font = '12px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = 'rgba(170,185,205,0.8)';
+  ctx.fillText('W/S 选择 · J 或回车改键 · R 恢复默认 · Esc 关闭', ox + 24, oy + 62);
+
+  const startY = oy + 84;
+  for (let i = 0; i < rows; i++) {
+    const ry = startY + i * 34;
+    const sel = i === st.sel;
+    if (sel) {
+      ctx.fillStyle = 'rgba(120,150,190,0.16)';
+      ctx.fillRect(ox + 14, ry - 6, pw - 28, 30);
+      ctx.fillStyle = 'rgba(255,225,160,0.9)';
+      ctx.fillRect(ox + 14, ry - 6, 3, 30);
+    }
+    if (i < ACTIONS.length) {
+      const a = ACTIONS[i];
+      ctx.font = '14px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = sel ? '#ffffff' : 'rgba(220,230,242,0.9)';
+      ctx.fillText(a.name, ox + 30, ry + 14);
+      const waiting = st.waiting === a.id;
+      const label = waiting ? '按任意键…' : keyLabel(BINDS[a.id]);
+      ctx.textAlign = 'right';
+      ctx.font = 'bold 14px "Segoe UI", "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = waiting ? '#ffd27a' : 'rgba(150,205,250,0.95)';
+      ctx.fillText(label, ox + pw - 30, ry + 14);
+      ctx.textAlign = 'left';
+    } else if (i === ACTIONS.length) {
+      ctx.font = '14px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = sel ? '#ffffff' : 'rgba(220,230,242,0.9)';
+      ctx.fillText('恢复默认键位', ox + 30, ry + 14);
+    } else if (i === ACTIONS.length + 1) {
+      const cur = MOBILE_PRESETS.find(p => p.id === mobileLayout) || MOBILE_PRESETS[0];
+      ctx.font = '14px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = sel ? '#ffffff' : 'rgba(220,230,242,0.9)';
+      ctx.fillText('手机按键布局', ox + 30, ry + 14);
+      ctx.textAlign = 'right';
+      ctx.font = '13px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = 'rgba(150,205,250,0.95)';
+      ctx.fillText(cur.name, ox + pw - 30, ry + 14);
+      ctx.textAlign = 'left';
+    } else {
+      ctx.font = '14px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = sel ? '#ffffff' : 'rgba(220,230,242,0.9)';
+      ctx.fillText('关闭', ox + 30, ry + 14);
+    }
+    st.hit.push({ i, x: ox + 14, y: ry - 6, w: pw - 28, h: 30 });
+  }
+
+  if (st.msg) {
+    ctx.font = '12px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = 'rgba(255,215,150,0.92)';
+    ctx.textAlign = 'center';
+    ctx.fillText(st.msg, W / 2, oy + ph - 16);
+    ctx.textAlign = 'left';
+  }
+  ctx.restore();
 }
 
 function drawShop() {

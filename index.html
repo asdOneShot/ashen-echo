@@ -1489,6 +1489,8 @@ function updatePlayer(dt) {
   p.invuln = Math.max(0, p.invuln - dt);
   p.flash = Math.max(0, p.flash - dt);
   p.staminaDelay = Math.max(0, p.staminaDelay - dt);
+  p.jBuf = Math.max(0, (p.jBuf || 0) - dt);
+  p.kBuf = Math.max(0, (p.kBuf || 0) - dt);
 
   if (p.dead) return;
 
@@ -1609,16 +1611,22 @@ function updatePlayer(dt) {
       p.x += ix * p.speed * 0.34 * dt;
       p.y += iy * p.speed * 0.34 * dt;
     }
-    if ((pressed['j'] || pressed['mouse'] || keys['j']) && t >= c.hitAt) p.comboQueued = true;
-    if ((pressed['k'] || pressed[' ']) && t > 0.1) {
-      if (p.combo === 0 && p.stamina >= SPECIALS.dash.stamina && t >= c.hitAt) {
+    // 输入缓冲：按一下就算数，不用卡帧数（K 优先于 J；手机长按仍可连段）
+    if (pressed['j'] || pressed['mouse'] || (IS_TOUCH && keys['j'])) p.jBuf = 0.3;
+    if (pressed['k'] || pressed[' ']) p.kBuf = 0.3;
+    if (p.kBuf > 0 && t > 0.05) {
+      if (p.combo === 0 && p.stamina >= SPECIALS.dash.stamina) {
+        p.kBuf = 0;
         startDashSlash(p);
-      } else if (p.combo === 1 && p.stamina >= SPECIALS.spin.stamina && t >= c.hitAt) {
+      } else if (p.combo === 1 && p.stamina >= SPECIALS.spin.stamina) {
+        p.kBuf = 0;
         startSpin(p);
-      } else if (t > 0.18 && p.stamina >= 25) {
+      } else if (t > 0.14 && p.stamina >= 25) {
+        p.kBuf = 0;
         startRoll(p, ix, iy);
       }
-    } else if (p.comboQueued && p.combo < COMBO.length - 1 && t >= c.hitAt) {
+    } else if (p.jBuf > 0 && p.combo < COMBO.length - 1 && t >= c.hitAt) {
+      p.jBuf = 0;
       startAttack(p, true);
     } else if (t >= atkTotal(c)) {
       p.state = 'idle';

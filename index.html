@@ -103,10 +103,22 @@ const ACTIONS = [
   { id: 'cycle', name: '切换武器', alias: 'q' },
 ];
 const DEFAULT_BINDS = { attack: 'j', roll: 'k', dash: 'shift', block: 'l', spell: 'f', flask: 'r', interact: 'e', lock: 'tab', cycle: 'q' };
-let BINDS = Object.assign({}, DEFAULT_BINDS);
+// 移动键永远不能被绑成动作键，否则会出现「按 D 也触发交互」这种串键
+const MOVE_KEYS = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
+function sanitizeBinds(b) {
+  const used = new Set();
+  for (const a of ACTIONS) {
+    let k = b[a.id];
+    if (typeof k !== 'string' || !k || MOVE_KEYS.indexOf(k) >= 0 || used.has(k)) k = DEFAULT_BINDS[a.id];
+    b[a.id] = k;
+    used.add(k);
+  }
+  return b;
+}
+let BINDS = sanitizeBinds(Object.assign({}, DEFAULT_BINDS));
 try {
   const rawB = localStorage.getItem('ashen_binds');
-  if (rawB) BINDS = Object.assign({}, DEFAULT_BINDS, JSON.parse(rawB));
+  if (rawB) BINDS = sanitizeBinds(Object.assign({}, DEFAULT_BINDS, JSON.parse(rawB)));
 } catch (e) {}
 function saveBinds() {
   try { localStorage.setItem('ashen_binds', JSON.stringify(BINDS)); } catch (e) {}
@@ -118,6 +130,10 @@ function actionOfKey(k) {
   return null;
 }
 function bindKey(id, k) {
+  if (MOVE_KEYS.indexOf(k) >= 0) {
+    if (game.settings) game.settings.msg = '不能绑到移动键 W/A/S/D';
+    return;
+  }
   const owner = actionOfKey(k);
   if (owner && owner.id !== id) {
     const tmp = BINDS[id];

@@ -1654,7 +1654,7 @@ function updatePlayer(dt) {
       p.state !== 'roll' && p.state !== 'attack' && p.state !== 'hurt') {
     p.flasks--;
     p.hp = Math.min(p.maxHp, p.hp + 45);
-    addFloater(p.x, p.y - p.r - 10, '+45', '#ffb0a0');
+    addFloater(p.x, p.y - p.r - 10, '+45', '#8ef0a0');
     game.toast = { text: '饮用原素瓶', t: 1.2 };
     sfx.soul();
   }

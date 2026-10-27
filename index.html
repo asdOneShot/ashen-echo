@@ -1097,6 +1097,74 @@ function wpn() { return WEAPONS[player && player.weapon] || WEAPONS.iron; }
 function wpnKind() { return wpn().kind || 'sword'; }
 function armorOf(id) { return ARMORS[id] || null; }
 function bootsOf(id) { return BOOTS[id] || BOOTS.none; }
+
+// ---------------- 存档 ----------------
+const SAVE_KEY = 'ashen_save_v1';
+let saveTimer = 3;
+function saveGame() {
+  if (!player) return;
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      v: 1,
+      hp: Math.round(player.hp),
+      souls: Math.round(player.souls),
+      weapon: player.weapon,
+      armor: player.armor || null,
+      boots: player.boots || 'none',
+      flasks: player.flasks,
+      maxFlasks: player.maxFlasks,
+      soulMax: player.soulMax,
+      maxStamina: player.maxStamina,
+      bossDead: !!bossDefeated,
+      x: Math.round(player.x),
+      y: Math.round(player.y),
+    }));
+  } catch (e) {}
+}
+function loadGame() {
+  let s = null;
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    s = JSON.parse(raw);
+  } catch (e) { return false; }
+  if (!s || s.v !== 1 || !player) return false;
+  player.maxFlasks = s.maxFlasks || player.maxFlasks;
+  player.flasks = Math.min(player.maxFlasks, typeof s.flasks === 'number' ? s.flasks : player.maxFlasks);
+  player.soulMax = s.soulMax || player.soulMax;
+  player.maxStamina = s.maxStamina || player.maxStamina;
+  player.stamina = player.maxStamina;
+  player.souls = typeof s.souls === 'number' ? s.souls : 0;
+  if (s.weapon && WEAPONS[s.weapon]) {
+    player.weapon = s.weapon;
+    if (player.ownedWeapons.indexOf(s.weapon) < 0) player.ownedWeapons.push(s.weapon);
+  }
+  if (s.armor && ARMORS[s.armor]) {
+    player.armor = s.armor;
+    if (player.ownedArmors.indexOf(s.armor) < 0) player.ownedArmors.push(s.armor);
+  }
+  if (s.boots && BOOTS[s.boots]) {
+    player.boots = s.boots;
+    if (player.ownedBoots.indexOf(s.boots) < 0) player.ownedBoots.push(s.boots);
+  }
+  player.hp = Math.min(player.maxHp, typeof s.hp === 'number' ? s.hp : player.maxHp);
+  if (s.bossDead) {
+    bossDefeated = true;
+    if (boss) { boss.dead = true; boss.hp = 0; }
+    for (const e of enemies) { e.dead = true; e.hp = 0; }
+  }
+  if (s.x && s.y) {
+    player.x = clamp(s.x, player.r, WORLD.w - player.r);
+    player.y = clamp(s.y, player.r, WORLD.h - player.r);
+  }
+  game.camX = clamp(player.x - viewW() / 2, 0, Math.max(0, WORLD.w - viewW()));
+  game.camY = clamp(player.y - viewH() / 2, 0, Math.max(0, WORLD.h - viewH()));
+  return true;
+}
+function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+}
+
 // 重量换防护：护甲越重越慢，鞋子调节速度（也补护甲）
 function speedMul() {
   const a = armorOf(player && player.armor);
@@ -1369,6 +1437,7 @@ function killEnemy(e, byPlayer) {
     sfx.victory();
     addEffect(makeShockwave(boss.x, boss.y, '#c9a0ff'));
     addEffect(makeDeathPuff(boss.x, boss.y, '#b48cff'));
+    saveGame();
     return;
   }
   if (e.dead) return;
@@ -1540,6 +1609,7 @@ function restAtBonfire() {
   game.toast = { text: '篝火已点燃 · 敌人已重生', t: 2.4 };
   game.shake = 4;
   sfx.bonfire();
+  saveGame();
 }
 
 // ---------------- 更新：玩家 ----------------
@@ -1874,6 +1944,7 @@ function buyItem(it) {
       game.shopMsg = '你已经有了';
     }
     game.shopMsgT = 1.6;
+    saveGame();
     return;
   }
   if (p.souls < it.price) {
@@ -1913,6 +1984,7 @@ function buyItem(it) {
   }
   game.shopMsgT = 1.6;
   sfx.bonfire();
+  saveGame();
 }
 
 function cycleWeapon(dir) {
@@ -2350,6 +2422,10 @@ function updateCamera(dt) {
 // ---------------- 主更新 ----------------
 function update(dt) {
   game.time += dt;
+  if (game.state === 'playing' && !player.dead) {
+    saveTimer -= dt;
+    if (saveTimer <= 0) { saveTimer = 3; saveGame(); }
+  }
   zoom = lerp(zoom, zoomTarget, Math.min(1, dt * 9));
   if (pressed['zoomin']) bumpZoom(1.12);
   if (pressed['zoomout']) bumpZoom(1 / 1.12);
@@ -4189,9 +4265,14 @@ function updateMenu(dt) {
     diffKey = DIFF_ORDER[game.menuSel] || 'normal';
     resetEnemies();
     boss = makeBoss();
+    loadGame();
     game.state = 'playing';
     game.toast = { text: '难度 · ' + D().name + '（' + D().tag + '）', t: 3.2 };
     if (sfx.ui) sfx.ui();
+  }
+  if (pressed['r']) {
+    clearSave();
+    game.toast = { text: '存档已清除，下次开始是全新进度', t: 2.4 };
   }
 }
 
@@ -4261,6 +4342,14 @@ function drawMenu() {
   ctx.fillStyle = 'rgba(150,142,128,0.6)';
   ctx.font = Math.round(W * 0.0115) + 'px "Microsoft YaHei", sans-serif';
   ctx.fillText('难度只调数值，不换关卡和敌人配置；中途可以在 Esc 设置里改', cx, cy0 + cardH + Math.round(H * 0.13));
+  const hasSave = (() => { try { return !!localStorage.getItem(SAVE_KEY); } catch (e) { return false; } })();
+  if (hasSave) {
+    ctx.fillStyle = 'rgba(190,150,110,0.85)';
+    ctx.fillText('检测到存档 · 开始会接着上次进度 · 按 R 清除存档重新开始', cx, cy0 + cardH + Math.round(H * 0.175));
+  } else {
+    ctx.fillStyle = 'rgba(150,142,128,0.45)';
+    ctx.fillText('进度会自动保存（每 3 秒与篝火/购买时）', cx, cy0 + cardH + Math.round(H * 0.175));
+  }
   ctx.restore();
 }
 

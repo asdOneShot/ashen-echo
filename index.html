@@ -2179,10 +2179,12 @@ function updateEnemies(dt) {
         if (e.ranged) {
           fireEnemyShot(e);
         } else {
-          // 矛手突刺：出手瞬间往前捅一截
+          // 矛手突刺：出手瞬间往前捅一截（但不能穿过玩家，否则判定角度会失效）
           if (e.lunge) {
-            e.x += Math.cos(e.facing) * e.lunge * 0.55;
-            e.y += Math.sin(e.facing) * e.lunge * 0.55;
+            const maxL = Math.max(0, d - e.r - player.r - 6);
+            const step = Math.min(e.lunge * 0.55, maxL);
+            e.x += Math.cos(e.facing) * step;
+            e.y += Math.sin(e.facing) * step;
           }
           addEffect(makeSlashEffect(
             e.x + Math.cos(e.facing) * 40,
@@ -2194,7 +2196,7 @@ function updateEnemies(dt) {
     } else if (e.state === 'active') {
       if (!e.hitDone && !e.ranged) {
         e.hitDone = true;
-        if (d < e.atkRange + 20 && Math.abs(angleDiff(ang, e.facing)) < 1.0) {
+        if (d < e.atkRange + 20 && Math.abs(angleDiff(ang, e.facing)) < 1.15) {
           const r = damagePlayer(e.dmg, e.x, e.y, e);
           if (r === 'parry') {
             // 完美格挡把敌人打硬直

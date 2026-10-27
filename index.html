@@ -518,6 +518,21 @@ const ENEMY_TYPES = {
     windup: 0.62, active: 0.14, recover: 0.95, souls: 42, color: '#5a5d6b',
     shield: true,
   },
+  spearman: {
+    r: 11, maxHp: 48, dmg: 15, speed: 72, atkRange: 64,
+    windup: 0.42, active: 0.12, recover: 0.66, souls: 28, color: '#7a4a4a',
+    lunge: 76,
+  },
+  warlock: {
+    r: 12, maxHp: 68, dmg: 13, speed: 38, atkRange: 250,
+    windup: 0.88, active: 0.1, recover: 1.5, souls: 52, color: '#4a4658',
+    ranged: true, keepDist: 185, shotCd: 2.3, ward: 7.5,
+  },
+  charger: {
+    r: 15, maxHp: 128, dmg: 24, speed: 54, atkRange: 46,
+    windup: 0.5, active: 0.14, recover: 1.05, souls: 48, color: '#6a5a44',
+    charge: 330,
+  },
 };
 
 function makeEnemy(x, y, type) {
@@ -553,6 +568,13 @@ function makeEnemy(x, y, type) {
     shotTimer: t.ranged ? rand(0.7, 1.7) : 0,
     shield: !!t.shield,
     guardT: 0,
+    lunge: t.lunge || 0,
+    ward: t.ward || 0,
+    wardT: 0,
+    wardTimer: t.ward ? rand(2, 5) : 0,
+    charge: t.charge || 0,
+    chargeCd: 0,
+    chargeDir: 0,
   };
 }
 
@@ -595,6 +617,13 @@ function resetEnemies() {
     makeEnemy(1090, 1210, 'shield'),
     makeEnemy(1580, 800, 'archer'),
     makeEnemy(1360, 1140, 'shield'),
+    makeEnemy(700, 760, 'spearman'),
+    makeEnemy(960, 620, 'spearman'),
+    makeEnemy(1620, 1120, 'spearman'),
+    makeEnemy(1040, 480, 'warlock'),
+    makeEnemy(1780, 640, 'warlock'),
+    makeEnemy(1220, 1450, 'charger'),
+    makeEnemy(1980, 1000, 'charger'),
   ];
   boss = bossDefeated ? null : makeBoss();
   lockTarget = null;
@@ -1184,6 +1213,11 @@ function playerAttackHit() {
 function damageEnemy(e, dmg, dir, byPlayer) {
   if (e.dead) return;
   if (byPlayer === undefined) byPlayer = true;
+  // 术士的护盾：减伤一半
+  if (e.wardT > 0) {
+    dmg = Math.max(1, Math.round(dmg * 0.5));
+    if (byPlayer) addFloater(e.x, e.y - e.r - 10, '护盾', '#b8a6ff');
+  }
   // 盾兵：正面格挡，重劈可破防
   if (e.shield && e.guardT <= 0) {
     const front = Math.abs(angleDiff(dir, e.facing + Math.PI)) < 1.15;
@@ -1812,6 +1846,25 @@ function updateEnemies(dt) {
     e.flash = Math.max(0, e.flash - dt);
     if (e.guardT > 0) e.guardT = Math.max(0, e.guardT - dt);
     if (e.shotTimer > 0) e.shotTimer -= dt;
+    if (e.chargeCd > 0) e.chargeCd -= dt;
+    if (e.wardT > 0) e.wardT = Math.max(0, e.wardT - dt);
+    if (e.ward) {
+      e.wardTimer -= dt;
+      if (e.wardTimer <= 0) {
+        e.wardTimer = e.ward;
+        let warded = 0;
+        for (const o of enemies) {
+          if (o.dead || o === e) continue;
+          if (Math.hypot(o.x - e.x, o.y - e.y) > 230) continue;
+          o.wardT = 4.5;
+          warded++;
+        }
+        if (warded > 0) {
+          addFloater(e.x, e.y - 28, '护盾 ' + warded, '#b8a6ff');
+          addEffect(makeShockwave(e.x, e.y, '#8a7bd8'));
+        }
+      }
+    }
     const d = dist(e, player);
     const ang = Math.atan2(player.y - e.y, player.x - e.x);
 
@@ -1819,6 +1872,33 @@ function updateEnemies(dt) {
       if (e.stateT > 0.32) {
         e.state = 'chase';
         e.stateT = 0;
+      }
+      resolveObstacles(e);
+      continue;
+    }
+
+    // 冲锋：直线突进，撞上玩家就撞停
+    if (e.state === 'charge') {
+      e.facing = e.chargeDir;
+      e.x += Math.cos(e.chargeDir) * e.charge * dt;
+      e.y += Math.sin(e.chargeDir) * e.charge * dt;
+      if (e.stateT > 0.08 && Math.hypot(player.x - e.x, player.y - e.y) < e.r + player.r + 8) {
+        const rr = damagePlayer(e.dmg, e.x, e.y, e);
+        if (rr === 'parry') {
+          e.state = 'stagger';
+          e.stateT = 0;
+        } else {
+          e.state = 'recover';
+          e.stateT = 0;
+          e.chargeCd = 2.6;
+        }
+        e.x -= Math.cos(e.chargeDir) * 14;
+        e.y -= Math.sin(e.chargeDir) * 14;
+        game.shake = Math.max(game.shake, 7);
+      } else if (e.stateT > 0.72) {
+        e.state = 'recover';
+        e.stateT = 0;
+        e.chargeCd = 2.6;
       }
       resolveObstacles(e);
       continue;
@@ -1889,6 +1969,11 @@ function updateEnemies(dt) {
           e.stateT = 0;
           e.hitDone = false;
         }
+      } else if (e.charge && d < 250 && d > 70 && e.chargeCd <= 0) {
+        e.state = 'charge';
+        e.stateT = 0;
+        e.chargeDir = ang;
+        addFloater(e.x, e.y - 30, '冲锋', '#ffb08a');
       } else {
         if (d > e.atkRange) {
           e.x += Math.cos(ang) * e.speed * dt;
@@ -1909,6 +1994,11 @@ function updateEnemies(dt) {
         if (e.ranged) {
           fireEnemyShot(e);
         } else {
+          // 矛手突刺：出手瞬间往前捅一截
+          if (e.lunge) {
+            e.x += Math.cos(e.facing) * e.lunge * 0.55;
+            e.y += Math.sin(e.facing) * e.lunge * 0.55;
+          }
           addEffect(makeSlashEffect(
             e.x + Math.cos(e.facing) * 40,
             e.y + Math.sin(e.facing) * 40,
@@ -2848,7 +2938,10 @@ const ART_SRC = {
   ogre: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADzklEQVR4nK1Xz2sTURCeDVHEiwWLqNU2Be2hiPaih14MHiTWgz2WVkIQKoK9NKDk1KYBIVRIFZJLe3BZtH+AYA0Kmh7qoUIJIjlUwdhaFamgFxEKrnzvZdLZ7e4mjX4Q3ts382a++d6P3RjUIuyF+zYd7yRaX6PPmz+pIz5htBInFGQ0B8lO9JHtHt+wMnpsfY0UCTn2vwiYg2RXf+h+NLKTBKpmEkfbD1CrCAcZI207x5ZnkorMbPGVek5fvUTph0/rKux2KcKNqkfLfeDdl03qONhG12P9tPFdGy6f7d1NzsYEuHok9lIBiUGiMp6jijTMJJUKsJ8bzxn/RKBaS87VQ/onr7fTzcUnds4Zz9GolVEqMRH0R6Yto6VTUBXyo+KeY4do9dM3FRQYLJfrvtznZeHk0VMnFPlHt+Oep8RwD8C5sphzELiTzNQDA1DCb91hA1Hg5JH2Ogk/NQx3clQKZ5Dg6geuJNVkVM+J5XJISDuIMAlJSJIw3MlLb98rRyaAX1dvjKbmiwZkhA1+Um6GHMcmnByOKdndakkSYTkZE5EA7A0RG8k5GPvJYEyKx7lizKu5qbmsCH6OTbhcu1xYuu5fRdWX5583oLtqhhyHn9x0IMLJQZQJ1hWQA3DcWtV9HMN0aXuZIKX0BbgaOe7l54cwM5ZrW6kRYAVYfgA72qt6KatIfpOICvzgXj4gxBLJXd17PtkUexmYyXsAJBwEUbCDAJPACeBAo9cy6vwDiwt6TwDN7AGZDMB+gCqIH3gVj0xbardjDd2JnlsWUTxOjcDyz81anDzPFxHbp+aLY54ExNGx+TYDEjeISqYm0XUhRhJ3n72hWxdPO+SVivH+ks8SBnkgHdWvY7Os7WaK7MhhIjOr7ZF9urX7nWQ+vqgd39+adCJLqtLJ4ViefUT1BV8C+Azj5IkY2dE+oupXIrQgwQTcQGI1J0VkFrU/k/BAwf+DpJYcQBBUj1+pTJS+p1tFJuWcF01oP57XDEJBRlSPFglfLsdUUE6ONgE1hrZbTgobE26ZgJnS0rurQf/BY01G2nic+0zYB4WGBBJZvQwf1nTQ7s6ioypukVRWyn2cooD1b3IJsprEfjtJe/7EVXC0TAzP2NVcPZIOnNG3aO1LKB9UPRD4We6+arf2Ei2t6DF5mbgBwkAzL6RQkBG3IqrCLYbf0kpcXSSu5IXIkPM487U7Mm2NBVUPNKVAQCUFr48W97ugZQV6xBcMB3XfZH6E1avXyuTFPvD0DzdiyNW77nCvYOq1Cz8Q93rzeSHo34sK6ANfArvwV/gLmLwsxT6MOKoAAAAASUVORK5CYII=",
   column: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAB/UlEQVR4nOVW27GCMBCNDAXYgXagJdiBlOA/94NS+JB/SkgJloAdxA7ogDsnw+GuMeERB/24Z0bDhOyek83uBqW+jE2sYVEUdjydTirLsmgBSYyRMcYSA8fjMZo8WsBut3siZjT+HfL+tx66rlNaay95URSd1rrrn732mA/Yz8uBx+OhbrebdeI62263djTGXMuyHCKBisA6jLCBfbSApmnUfr+3CYfxfD6/CHDBtfi1baumkI69ZH3DGXC/34d3mEM5+gQcDgdbpnNKNJ1cIYS45wkBFNcnZLW0KSVLFkvnbEY446ZprotYYwW4wO4hoq5r9XEB+7/Qe3NhdQEAkg24XC4qFmmsIXeNSIRKctUIGGOGRvUOEvVlJO86QCTQMT+ZAzn+UH4kFlUgb8dqjU+yvK7rK4mRgMgBNiQ0KrRf9IWyLH/miEiXkLPjuSFnSya5tBHP1TsRyEEuy61vwU99AOQ8Ds7x0sqyzBuRNIYccG87uXOQs1OCXJTqS0TSKXKt9XDmAO74UOMBGcmxBnYgD7Rqe3umU+SS2EfOj44Q+RQ2Y+QMI5yBAI4pgMQc+SXkksNOa43zd1GFBFhyOHQ/qeBcRsH3fgk54D0COOa5M/Qk8JHLOTk/RR4UIAlk6BkB3+4l5ux8VEA7smtXgE/UXHIgmISB+VgEW/Ivo7VO2TQhoFIAAAAASUVORK5CYII=",
   stump: "iVBORw0KGgoAAAANSUhEUgAAABsAAAAfCAYAAAAWRbZDAAADAElEQVR4nL2WvWoqQRTHjxeLCEokESwkmFoI2UdQCKQTm5RCwHJT7CPY2G+x9ulsLPYRfIKwhWAhCVtE1CIiJppoEcN/7j3LcXR1r1zuAZlxZ/b8ztecWaL/KLF9i4ZhbD1Lp9PU6XT+HczYAWGQ/t913eNhlUpFjdPpVP1YqQ7SxY0A3YBZlqVG3/cDmA66vLzcUuL7fiRgnCf1en1DKSvgZ4DoIOzBOp7z/kgwDiG8kQUgAbwuQfwf+7C+z7s4e3V/f69ehBIG8FwCpacc7qjyiyeAXV9fB15Ji/EM+YTV+XxejY+Pjxvw9J9wRgojQlAqldS8WCwqmB5CQDhMXLUShCMDb8NCGcA45iwcQowM4nU9rNPpVIE8z4vmmVSClzh/+pqcH50ziCwGWAwoPMLIYKzLIpFyqPyDQ23btsoVh0VWpWEYJu/zPK/JOYIh0ggUzcHSh0gA4g84qtC2bbNcLjuFQoE+Pj42+ibnsF6vN6M055jeQSzLCryAmKbpzGYzmkwmVC6XabFYUC6Xo9FoRL1eTxnZarUeLMtq7qvEDRjrrlarzt3dHb2+vlK73aavry86OTmhWq1G4/GYTk9P6fz8nBKJBL29vdFwOFSGNBqNByJqRq5GyNXVlVK6Xq/p5uaGvr+/6ezsjLLZLKVSKeXZcrmkwWCgjPj8/KTVakV/XY2Q5+dnms/nKqQIy8vLC72/v1O321WeJJNJZQggAMKwfr9/9OVp3t7eOhcXFyovKAqAURgY4Wkmk1GGPD09qRdc1z0YwjCYAlYqFUceWL33AYai4h5p2zaAUpqRYZ7nOXyg5Y3NwiA+Z2jkENHitryNh4GgmBWwSE/ZIwbJFibOnDxGTR1muq7ryIbKnwa7BIoZxO0NoJC2ZcZ1kITsAsmbehdon8QkSHZ9vvYZxhAeUZ27QP7vLvIQBlMgvKxfF9yUdaBcjwoKcgYlnKew70X9GOh7IftAW10fIsMnv572XZL+AY94EngW5o0O22VAFBAkKJBQs4+XrQ7yAwMtJJBikq+bAAAAAElFTkSuQmCC",
-  statue: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEl0lEQVR4nJ1WS0srSRSujsGFBkdJLgoqIW5GJ0YX4sbnMLgxzNKF/gEN2AsDisisBH9Cz1/QlbsxbmQcwcdKdIwZHQcTNSrCNT6jggszfAdP3epOd+zrB9WnqvrxnfOdU1WtFQoF4QRN08aFSxQKhd/FJ+AtRTwzM2PwXCaTIbu6uqrDBgIBIxgM0tzp6Sne+ZQzXjvy4eFhQyVlhEIhkNG9dDoNR6j/7oh0lp1x44impgDkAwMD8kNOCAQCjmqwIkAqldI/ckKDAyCura0VkUjEQJRtbW10c29vT7ASmOf+09OTGBkZEefn5/JDS0tLsq+mBtjf3/+WHws8IA+Hw6aoI5EIKyIuLi5EeXk5PkIN5MDDw4MkraqqEt3d3UXEPC5VzF5+8Pr6WpLOz89TH+rU19dT1K2trVIBOHR2dkbvgRzOVFdXm1KAhvtcH/iuXTo81gmQQgHYx8dHUgBRw7ICt7e3YmNjg5yCAw0NDeLu7s4xBaXgUQeIDETJZJLIERkUqKysJAtC9FUSBisAZ9T7cBZ9pNkuFR518Pr6SkQoLia3A5xAdEzGxGoa3MJjNzk4OGgiTyaTOpThgkSzKsBO2AHzSJWdCl518Pb2JlZWVuQ4lUqJ4+NjvaKiwjg4OKC5lpYW+iBUQnMidQsPKjORSOgdHR0GNg6sdxCjhcNhuTcAsO3t7XL9q2sfKVP3BaQIUdfU1JR0wIsLnMAyiUajBl7EmsbH4ATyitqIxWJU6blcTioAwIKIoTqhkqMPJ20dUJ0AYrGYgaWo7oRMjqUI3N/fi3w+L+zA0QPsLFaDHbzq4N2J8YWFBdNDUGFtbY1sPB4XqAeQqPXyEeyiB2gVWCszGo1S6+npEXNzc3IX5I0FhcirgOsABFCHn4HkXKC8K9o6oGnaeDweNy0PbLObm5tifX3d9DB/xO/3m85/a3R4Tq0TjJ12RQ8uTU1NpklE0tXVRQoAnZ2dUgWQoxbUYxwqcPTIPezy8rJUgHdDRwfq6uqEqgJybVUA0UxOTsoCVMGk1mWH8wLvYQ73S66CcDhMTlxdXdHDqAEA0SJqkKMP8svLS7G9vS18Pp/JCSYHEZ+SHx1IHjUikKPAgEQiQR/AHIit5Lu7uyZijhIHGZPDcsM4m83qRQoUlPU/NTVlICrON/KK/GL3a25uFoeHhyQrgOfwa9bY2EjjbDZL+wKThEIhg3/dUNQvLy9F5KYUjI6OYium3Q/FA3JE/Pz8LLa2tqipAFlZWZnjBpPL5eRPq6t/Qt97Pvv6+uglnA/9/f2GGiFwcnICqfVgMGj09vba3kNffReBIKBMJmNSAerL49jv9xtoyCPIMYdCxJYMgrGxMTE0NCRfXlxcFDs7O2JiYkLMzs4WRTY9PU3v3tzcyOVcFL2mjZsOI9UzXpKQnv8X+RwAjo6OpMU2jehVoBjT6TQVJmzJFNgBDvz8y6+Ujq9fr+R8Pn8vfL4fTNYtTjP/6a7+iKz48qWOGmAlh+X5z0CzUwDRj+m/fVjBwL///C1+/KmdrBv89ecf+ncrIGxIreSwAFs3oFpzUuAzjn0v4MD/cknzXAl7pkQAAAAASUVORK5CYII="
+  statue: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEl0lEQVR4nJ1WS0srSRSujsGFBkdJLgoqIW5GJ0YX4sbnMLgxzNKF/gEN2AsDisisBH9Cz1/QlbsxbmQcwcdKdIwZHQcTNSrCNT6jggszfAdP3epOd+zrB9WnqvrxnfOdU1WtFQoF4QRN08aFSxQKhd/FJ+AtRTwzM2PwXCaTIbu6uqrDBgIBIxgM0tzp6Sne+ZQzXjvy4eFhQyVlhEIhkNG9dDoNR6j/7oh0lp1x44impgDkAwMD8kNOCAQCjmqwIkAqldI/ckKDAyCura0VkUjEQJRtbW10c29vT7ASmOf+09OTGBkZEefn5/JDS0tLsq+mBtjf3/+WHws8IA+Hw6aoI5EIKyIuLi5EeXk5PkIN5MDDw4MkraqqEt3d3UXEPC5VzF5+8Pr6WpLOz89TH+rU19dT1K2trVIBOHR2dkbvgRzOVFdXm1KAhvtcH/iuXTo81gmQQgHYx8dHUgBRw7ICt7e3YmNjg5yCAw0NDeLu7s4xBaXgUQeIDETJZJLIERkUqKysJAtC9FUSBisAZ9T7cBZ9pNkuFR518Pr6SkQoLia3A5xAdEzGxGoa3MJjNzk4OGgiTyaTOpThgkSzKsBO2AHzSJWdCl518Pb2JlZWVuQ4lUqJ4+NjvaKiwjg4OKC5lpYW+iBUQnMidQsPKjORSOgdHR0GNg6sdxCjhcNhuTcAsO3t7XL9q2sfKVP3BaQIUdfU1JR0wIsLnMAyiUajBl7EmsbH4ATyitqIxWJU6blcTioAwIKIoTqhkqMPJ20dUJ0AYrGYgaWo7oRMjqUI3N/fi3w+L+zA0QPsLFaDHbzq4N2J8YWFBdNDUGFtbY1sPB4XqAeQqPXyEeyiB2gVWCszGo1S6+npEXNzc3IX5I0FhcirgOsABFCHn4HkXKC8K9o6oGnaeDweNy0PbLObm5tifX3d9DB/xO/3m85/a3R4Tq0TjJ12RQ8uTU1NpklE0tXVRQoAnZ2dUgWQoxbUYxwqcPTIPezy8rJUgHdDRwfq6uqEqgJybVUA0UxOTsoCVMGk1mWH8wLvYQ73S66CcDhMTlxdXdHDqAEA0SJqkKMP8svLS7G9vS18Pp/JCSYHEZ+SHx1IHjUikKPAgEQiQR/AHIit5Lu7uyZijhIHGZPDcsM4m83qRQoUlPU/NTVlICrON/KK/GL3a25uFoeHhyQrgOfwa9bY2EjjbDZL+wKThEIhg3/dUNQvLy9F5KYUjI6OYium3Q/FA3JE/Pz8LLa2tqipAFlZWZnjBpPL5eRPq6t/Qt97Pvv6+uglnA/9/f2GGiFwcnICqfVgMGj09vba3kNffReBIKBMJmNSAerL49jv9xtoyCPIMYdCxJYMgrGxMTE0NCRfXlxcFDs7O2JiYkLMzs4WRTY9PU3v3tzcyOVcFL2mjZsOI9UzXpKQnv8X+RwAjo6OpMU2jehVoBjT6TQVJmzJFNgBDvz8y6+Ujq9fr+R8Pn8vfL4fTNYtTjP/6a7+iKz48qWOGmAlh+X5z0CzUwDRj+m/fVjBwL///C1+/KmdrBv89ecf+ncrIGxIreSwAFs3oFpzUuAzjn0v4MD/cknzXAl7pkQAAAAASUVORK5CYII=",
+  kobold: "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",
+  necromancer: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABp0lEQVRYhcWXv07DMBDGvyAmppMYGfAEqAteKjF2rNSlcye/CX6VPgHhDZgqRk+oo0dGj2xmsnESp9jXBE6K5Dq6+36+P3IK/LM1Z/j6KeJwHb3WGtZaGGNgjGHH4jh5rXUQBYAIwol3yRV/vPoCADR3TwDQAaqxC47TS9tis1xgs1zgWWsQEUucBWCthd6tsby/xc01Qe/WZwHUlMArpeCcQ/v2Hjf3hyO22wdIKWGM8ajsA1YJVqsVXj8+sT8cQUTxkVIC3fGcDMArpaJQMCklhBAAwIZgZYCIIISAtRZEBOccuw+KAdLTp2K5dU0WqjMQTpsKO+fifihJqZUAeKVU/GGtHQA55wb7UwJEoXSdqzmnF9gAOdFZAVLhFAD4adCwXzOORQB9wdy7NAs1VgLQtG07CJ7LAsfYPRDqHdZjYJMBnAr+ZwAAIIQYiPSzAJQ34iQZSEVny0Du1BXmMZIJ1m2YAvQb8RewAQT7MiqBG4HpQJQCNMaY6vqesAjBKkG/6/vNl5uKMauegtzM5wRLr+jafzK+5IOjQLgZLGogGD5crfntG+zsB3uxBH6RAAAAAElFTkSuQmCCAAAAAElFTkSuQmCC",
+  orc: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEWUlEQVRYha2XT4gcRRTGfx2NhghaIZtxlgxJKWbQ0WgjbsBAtBEMCzlseRFJYNMiepRJwD14SDoHPWwgaTxE0UsnsIsHwVkwsuYgk0N0SCB0El2W7AYqMbLNsomF4NKI0B4m08zszp+eIQ9miq569b6v3vuqqttiQJuaGE92DQ8BsH2rqLfjx6x+4/Q9oRm8AQzw5z0DwJ4jp/qKuWEQAt1samI86cc/E9vLp4+2BP3o7M/4Ycjm00fTvtUjpyjbNp/sfxmARnka1ikzmdM1NTGe3Ly7DECxkOPkhet8ffitlBCQgjf7HZo81xWjr3odPziavP/5V1w6cyxdYe6dj1n+/gsAFpZWWgicmJ7tGX8gEWqtk0DK9NnVmktnjqXgWYAHJnD84GhSLOTW9S9MniM5OMrMXASA4zj4vv9wM6CUSoTW7Czl247fnoswUmLbNpVKBdu2EUJ0JZJ5Gza2l1SKa6ubmJmLeGb/e1xb3ZS2UikAKpUKQgiMMYw8dr9r3EezEqgLaxOVSgWtNeVyGd/3AdIWQGuN1hrbtvn0zWc5f2Wua9xMGZiaGE8OjJR4ZXOc9vm+j5SScrmctg1gIQQjL+RZWFqhWMh1PZweyUJg985hr7h9G9YGi22PWwy/+BpxHBOGIfPz8xhjqNVqKKUIwxCtNft2DPGHtZF98mlq85qLNxZPDERAKZV8sLfIr/F/3F28w+pTgunvfsAYQ7lcJo5jXNcliiJmZ2cxxhDHMT9d+c16u1jwrA0WW598gvsbt3ha63UkupZAKZUATMxcZeiv+mVz8stvLSklSqlUD77vo7VGSonjOAghWuJ8c/nOur6G9RShMQ+AL1wnDEML6kIzxiClxHVdKpUKSik8z0vHAM7+Mo8QUTN4sxas9K/T6huBjDEYY9BaWwCOJJECqka2rKxcLhN4LgBVXY8tpUyEEAgh+HDPDg5NnmuGsTpmoBN4s7lS4waawJVoA1XfXeuSAIyV8hQLufSOaB5vq4HLp48mk2OvpiTWghthg10HC1zZSsoLQDop+OG9z1Ms5Ng1PES7I7wtgYWlFc5fmWOslMduM661plqtUsVBugFVHJxygBZOqoPm0ty8u8zC0sra9AMdtuHuncNesZDjau0WwQPhNUwIkSilMMYQRRFhGBLHMbVajTiOyefzKKWIoogoirh4YxFn93Pc+/sfLt5YXAvV/20shEiklImAJAiCxHGclrYxJqVMqJeh22+w67i+vUSqkUa6jTF4nofv+4yV8pyYnu0VzhropfSzd99AKYUQAs/zEEKkd0ID/MBIiamJ8Z6xMt+GDXvJeZ1/F2+hKx5hCK7rAlCtVlOfsdIoACtb2p9+D8waiMDv08cz+f04cwoA14YgbA8OfX4XuHZdONp097s917P2qQ38YdJmVS3WICnXV6FF+JkJuHb9/H/YlolAv+DN2ZECApU+rtv2mUXYq+6d5vSal/Ug6vROZ2Xw6Yr1P/PA8vTeFBOnAAAAAElFTkSuQmCCAAAAAElFTkSuQmCC",
 };
 
 const ART = {};
@@ -3400,7 +3493,14 @@ function drawEnemy(e) {
     eyes = [[-4, -21, 2, 1], [2, -21, 2, 1]];
   }
 
-  const artKey = big ? 'troll' : (e.type === 'hollow' ? 'ghost' : (e.type === 'archer' ? 'archer' : (e.type === 'shield' ? 'hell' : 'knight')));
+  const artKey = big ? 'troll'
+    : e.type === 'hollow' ? 'ghost'
+    : e.type === 'archer' ? 'archer'
+    : e.type === 'shield' ? 'hell'
+    : e.type === 'spearman' ? 'kobold'
+    : e.type === 'warlock' ? 'necromancer'
+    : e.type === 'charger' ? 'orc'
+    : 'knight';
   const art = ART[artKey];
   if (art) {
     drawArt(art, e.x, e.y + bob * 0.5, flip < 0, 1.28, hurt, ART_W[artKey]);

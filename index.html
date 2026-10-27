@@ -24,7 +24,7 @@
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="hint">WASD 移动 · J 连斩三连 · 攻击中接 K 突进斩 / J→J→K 回旋斩 · L/右键 举盾格挡（起手瞬间挡中=完美格挡） · K 翻滚 · Shift 冲刺 · F 复仇之魂 · R 饮原素瓶 · Tab 锁定 · E 休息 / 交易 · 滚轮或 +/− 调视野</div>
+<div id="hint">WASD 移动 · J 攻击（长弓/铳为射击）· Q 或 1-8 换武器 · 攻击中接 K 突进斩 / J→J→K 回旋斩 · L/右键 举盾格挡（起手瞬间挡中=完美格挡） · K 翻滚 · Shift 冲刺 · F 复仇之魂 · R 饮原素瓶 · Tab 锁定 · E 休息 / 交易 · 滚轮或 +/− 调视野</div>
 <script>
 'use strict';
 
@@ -338,6 +338,8 @@ function makePlayer() {
     souls: 0,
     weapon: 'iron',
     ownedWeapons: ['iron'],
+    armor: null,
+    ownedArmors: [],
     flasks: 3,
     maxFlasks: 3,
     soul: 0,
@@ -560,7 +562,72 @@ function startRoll(p, ix, iy) {
   sfx.roll();
 }
 
+function aimAt(p) {
+  if (lockTarget && !lockTarget.dead) {
+    p.facing = Math.atan2(lockTarget.y - p.y, lockTarget.x - p.x);
+    return;
+  }
+  let best = null;
+  let bestD = 1e9;
+  const all = enemies.slice();
+  if (boss && !boss.dead && boss.aggro) all.push(boss);
+  for (const e of all) {
+    if (e.dead) continue;
+    const d = dist(p, e);
+    const a = Math.atan2(e.y - p.y, e.x - p.x);
+    if (d < 190 && Math.abs(angleDiff(a, p.facing)) < 1.0 && d < bestD) {
+      bestD = d;
+      best = e;
+    }
+  }
+  if (best) p.facing = Math.atan2(best.y - p.y, best.x - p.x);
+}
+
+function startShoot(p) {
+  const k = wpnKind();
+  const cost = k === 'gun' ? 22 : 14;
+  if (p.stamina < cost) {
+    p.staminaDelay = 0.8;
+    return false;
+  }
+  p.state = 'shoot';
+  p.stateT = 0;
+  p.attackId++;
+  p.shotDone = false;
+  p.stamina -= cost;
+  p.staminaDelay = 0.6;
+  aimAt(p);
+  return true;
+}
+
+function fireWeaponShot(p) {
+  const k = wpnKind();
+  const speed = k === 'gun' ? 940 : 620;
+  const life = k === 'gun' ? 0.3 : 0.95;
+  projectiles.push({
+    x: p.x + Math.cos(p.facing) * 16,
+    y: p.y + Math.sin(p.facing) * 16 - 6,
+    vx: Math.cos(p.facing) * speed,
+    vy: Math.sin(p.facing) * speed,
+    r: k === 'gun' ? 4 : 5,
+    dmg: atkDmg(COMBO[0]),
+    life: life,
+    maxLife: life,
+    hitList: [],
+    ang: p.facing,
+    kind: k === 'gun' ? 'bullet' : 'arrow',
+  });
+  game.shake = Math.max(game.shake, k === 'gun' ? 11 : 4);
+  addEffect({ kind: 'puff', x: p.x + Math.cos(p.facing) * 20, y: p.y + Math.sin(p.facing) * 20 - 6, life: 0.22, maxLife: 0.22, color: k === 'gun' ? '#ffd8a0' : '#cfe0f0' });
+  sfx.spellHit();
+}
+
 function startAttack(p, chain) {
+  const kind = wpnKind();
+  if (kind === 'bow' || kind === 'gun') {
+    startShoot(p);
+    return;
+  }
   if (chain && p.combo < COMBO.length - 1) {
     p.combo++;
   } else if (!chain && p.comboT > 0 && p.combo < COMBO.length - 1) {
@@ -577,25 +644,7 @@ function startAttack(p, chain) {
   p.attackHitDone = false;
   p.stamina -= c.stamina;
   p.staminaDelay = 0.7;
-  if (lockTarget && !lockTarget.dead) {
-    p.facing = Math.atan2(lockTarget.y - p.y, lockTarget.x - p.x);
-  } else {
-    // 软锁定：前方小角度内最近的敌人自动瞄准
-    let best = null;
-    let bestD = 1e9;
-    const all = enemies.slice();
-    if (boss && !boss.dead && boss.aggro) all.push(boss);
-    for (const e of all) {
-      if (e.dead) continue;
-      const d = dist(p, e);
-      const a = Math.atan2(e.y - p.y, e.x - p.x);
-      if (d < 170 && Math.abs(angleDiff(a, p.facing)) < 1.0 && d < bestD) {
-        bestD = d;
-        best = e;
-      }
-    }
-    if (best) p.facing = Math.atan2(best.y - p.y, best.x - p.x);
-  }
+  aimAt(p);
   if (p.combo === 1) addFloater(p.x, p.y - 26, '反手斩', '#cfe4ff');
   else if (p.combo === 2) addFloater(p.x, p.y - 26, '重劈', '#ffd89a');
   sfx.swing();
@@ -718,7 +767,7 @@ function updateEProjectiles(dt) {
     if (s.life <= 0) continue;
     if (!player.dead && player.invuln <= 0 &&
       Math.hypot(player.x - s.x, player.y - s.y) < player.r + s.r) {
-      const r = damagePlayer(s.dmg, s.x, s.y);
+      const r = damagePlayer(s.dmg, s.x, s.y, s.owner);
       if (r === 'parry') {
         // 完美格挡把箭弹开
         addEffect(makeShockwave(s.x, s.y, '#ffe9a0'));
@@ -756,12 +805,21 @@ function drawEProjectiles() {
   }
 }
 
-// ---------------- 武器与商店 ----------------
+// ---------------- 武器、护甲与商店 ----------------
 const WEAPONS = {
-  iron:  { name: '灰铁长剑', dmg: 1.00, reach: 1.00, spd: 1.00, price: 0, tint: '#a4b2c2', desc: '骑士制式长剑，攻守平衡。' },
-  keen:  { name: '细刃刺剑', dmg: 0.86, reach: 0.94, spd: 1.28, price: 180, tint: '#cfe0f0', desc: '轻而快，挥砍间隔明显更短。' },
-  great: { name: '守墓巨剑', dmg: 1.50, reach: 1.16, spd: 0.78, price: 260, tint: '#b8b09a', desc: '沉重缓慢，一击即可破盾。' },
-  ember: { name: '余烬之刃', dmg: 1.28, reach: 1.06, spd: 0.96, price: 430, tint: '#ffb070', desc: '刃上余火未熄，灼烧敌人。' },
+  iron:  { kind: 'sword', name: '灰铁长剑', dmg: 1.00, reach: 1.00, spd: 1.00, price: 0, tint: '#a4b2c2', desc: '骑士制式长剑，攻守平衡。' },
+  keen:  { kind: 'sword', name: '细刃刺剑', dmg: 0.86, reach: 0.94, spd: 1.28, price: 180, tint: '#cfe0f0', desc: '轻而快，挥砍间隔明显更短。' },
+  great: { kind: 'sword', name: '守墓巨剑', dmg: 1.50, reach: 1.16, spd: 0.78, price: 260, tint: '#b8b09a', desc: '沉重缓慢，一击即可破盾。' },
+  ember: { kind: 'sword', name: '余烬之刃', dmg: 1.28, reach: 1.06, spd: 0.96, price: 430, tint: '#ffb070', desc: '刃上余火未熄，灼烧敌人。' },
+  spear: { kind: 'spear', name: '猎手长矛', dmg: 0.90, reach: 1.62, spd: 0.90, price: 220, tint: '#c8b98a', desc: '够远，但一次只捅一下。' },
+  bow:   { kind: 'bow',   name: '灰烬长弓', dmg: 0.80, reach: 1.00, spd: 1.20, price: 320, tint: '#9a7a52', desc: '远程射击，箭能再穿透一个。' },
+  gun:   { kind: 'gun',   name: '铳火手枪', dmg: 1.70, reach: 1.00, spd: 0.60, price: 540, tint: '#8e949c', desc: '贴脸铳击，装填慢。' },
+  tower: { kind: 'shield', name: '守墓大盾', dmg: 0.55, reach: 0.85, spd: 0.92, price: 240, tint: '#7d8a99', desc: '举盾减伤翻倍，护甲 +6。' },
+};
+const ARMORS = {
+  cloak: { name: '旅者斗篷', armor: 4, price: 140, desc: '护甲 +4，聊胜于无。' },
+  mail:  { name: '锁子甲',   armor: 9, price: 330, desc: '护甲 +9，正面挨刀没那么疼。' },
+  plate: { name: '守墓板甲', armor: 15, price: 580, desc: '护甲 +15，沉得迈不开腿。' },
 };
 const SHOP_ITEMS = [
   { id: 'flask', name: '原素瓶 ×1', price: 90, desc: '携带上限 +1，并补满' },
@@ -772,15 +830,22 @@ const SHOP_ITEMS = [
 const vendor = { x: 724, y: 1266, r: 12, bob: 0 };
 
 function wpn() { return WEAPONS[player && player.weapon] || WEAPONS.iron; }
+function wpnKind() { return wpn().kind || 'sword'; }
+function armorOf(id) { return ARMORS[id] || null; }
+function armorValue() {
+  const a = armorOf(player && player.armor);
+  return (a ? a.armor : 0) + (wpnKind() === 'shield' ? 6 : 0);
+}
 function atkDmg(c) { return Math.round(c.dmg * wpn().dmg); }
 function atkReach(c) { return c.reach * wpn().reach; }
 function atkTotal(c) { return c.total / wpn().spd; }
 
 function shopList() {
   const list = SHOP_ITEMS.map((it) => ({ id: it.id, name: it.name, price: it.price, desc: it.desc, owned: false, kind: 'item' }));
-  for (const id in WEAPONS) {
+  const order = ['iron', 'keen', 'great', 'ember', 'spear', 'bow', 'gun', 'tower'];
+  for (const id of order) {
     const w = WEAPONS[id];
-    if (!w.price) continue;
+    if (!w || !w.price) continue;
     list.push({
       id: 'w:' + id,
       name: w.name,
@@ -790,6 +855,19 @@ function shopList() {
       weapon: id,
       owned: player.ownedWeapons.indexOf(id) >= 0,
       equipped: player.weapon === id,
+    });
+  }
+  for (const id in ARMORS) {
+    const a = ARMORS[id];
+    list.push({
+      id: 'a:' + id,
+      name: a.name,
+      price: a.price,
+      desc: a.desc,
+      kind: 'armor',
+      armor: id,
+      owned: (player.ownedArmors || []).indexOf(id) >= 0,
+      equipped: player.armor === id,
     });
   }
   return list;
@@ -975,7 +1053,30 @@ function killEnemy(e, byPlayer) {
   sfx.soul();
 }
 
-function damagePlayer(dmg, sx, sy) {
+// 完美格挡后的反击：只有近战武器能用，且只能打贴身的近战敌人（射手不行）
+function tryRiposte(src) {
+  const p = player;
+  if (!src || src.dead) return false;
+  if (src.type === 'archer') return false;
+  const kind = wpnKind();
+  if (kind !== 'sword' && kind !== 'spear' && kind !== 'shield') return false;
+  const d = Math.hypot(src.x - p.x, src.y - p.y);
+  if (d > 86) return false;
+  const ang = Math.atan2(src.y - p.y, src.x - p.x);
+  p.facing = ang;
+  const dmg = Math.round(atkDmg(COMBO[2]) * 1.25);
+  src.x += Math.cos(ang) * 10;
+  src.y += Math.sin(ang) * 10;
+  damageEnemy(src, dmg, ang, true);
+  addFloater(src.x, src.y - src.r - 22, '反击 -' + dmg, '#ffd27a');
+  addEffect(makeShockwave(src.x, src.y, '#ffd27a'));
+  addEffect({ kind: 'slash', x: src.x, y: src.y, life: 0.26, maxLife: 0.26, ang, reach: 30 });
+  game.shake = Math.max(game.shake, 13);
+  game.hitStop = Math.max(game.hitStop, 0.08);
+  return true;
+}
+
+function damagePlayer(dmg, sx, sy, src) {
   const p = player;
   if (p.dead || p.invuln > 0) return 'none';
 
@@ -995,6 +1096,9 @@ function damagePlayer(dmg, sx, sy) {
         addFloater(p.x, p.y - p.r - 8, '完美格挡', '#ffe9a0');
         addEffect({ kind: 'shock', x: p.x, y: p.y, life: 0.42, maxLife: 0.42, color: '#ffe9a0' });
         sfx.parry();
+        if (tryRiposte(src)) {
+          addFloater(p.x, p.y - p.r - 20, '完美格挡 · 反击', '#ffe9a0');
+        }
         return 'parry';
       }
       if (p.stamina >= 20) {
@@ -1009,6 +1113,21 @@ function damagePlayer(dmg, sx, sy) {
         addFloater(p.x, p.y - p.r - 8, '格挡 -' + reduced, '#cfe0f0');
         addEffect({ kind: 'puff', x: p.x + Math.cos(p.facing) * 16, y: p.y + Math.sin(p.facing) * 16, life: 0.3, maxLife: 0.3, color: '#cfe0f0' });
         sfx.block();
+        // 普通格挡也把贴身近战敌人顶开一步，并打断它的出招
+        if (src && !src.dead && src.type !== 'archer') {
+          const dd = Math.hypot(src.x - p.x, src.y - p.y);
+          if (dd < 82) {
+            const a2 = Math.atan2(src.y - p.y, src.x - p.x);
+            src.x += Math.cos(a2) * 10;
+            src.y += Math.sin(a2) * 10;
+            if (src.state === 'windup' || src.state === 'active') {
+              src.state = 'stagger';
+              src.stateT = 0;
+              src.hitDone = true;
+            }
+            addEffect({ kind: 'puff', x: src.x, y: src.y, life: 0.22, maxLife: 0.22, color: '#bfd6ea' });
+          }
+        }
         if (p.hp <= 0) {
           p.hp = 0;
           killPlayer();
@@ -1024,13 +1143,15 @@ function damagePlayer(dmg, sx, sy) {
     }
   }
 
-  p.hp -= dmg;
+  const av = armorValue();
+  const taken = av > 0 ? Math.max(1, Math.round(dmg * (1 - av / (av + 40)))) : dmg;
+  p.hp -= taken;
   p.invuln = 0.8;
   p.flash = 0.25;
   p.soul = Math.max(0, p.soul - 10);
   game.shake = Math.max(game.shake, 14);
   game.hitStop = 0.05;
-  addFloater(p.x, p.y - p.r - 4, '-' + dmg, '#ff6b6b');
+  addFloater(p.x, p.y - p.r - 4, '-' + taken, av > 0 ? '#ffb08a' : '#ff6b6b');
   sfx.hurt();
   if (p.hp <= 0) {
     p.hp = 0;
@@ -1137,6 +1258,12 @@ function updatePlayer(dt) {
   // 锁定切换
   if (pressed['tab']) toggleLock();
 
+  // 武器切换：Q 轮换，数字键直接选
+  if (pressed['q']) cycleWeapon(1);
+  for (let i = 0; i < 8; i++) {
+    if (pressed[String(i + 1)]) selectWeapon(i);
+  }
+
   // 连招窗口：出招结束后 0.62 秒内再按攻击可接下一段
   if (p.state !== 'attack' && p.comboT > 0) {
     p.comboT = Math.max(0, p.comboT - dt);
@@ -1215,6 +1342,18 @@ function updatePlayer(dt) {
       p.state = 'idle';
       p.stateT = 0;
       p.comboT = 0.62;
+    }
+  } else if (p.state === 'shoot') {
+    const t = p.stateT;
+    const isGun = wpnKind() === 'gun';
+    if (t >= 0.1 && !p.shotDone) {
+      p.shotDone = true;
+      fireWeaponShot(p);
+    }
+    if (t >= (isGun ? 0.62 : 0.46)) {
+      p.state = 'idle';
+      p.stateT = 0;
+      p.comboT = 0;
     }
   } else if (p.state === 'dashslash') {
     const t = p.stateT;
@@ -1322,7 +1461,17 @@ function closeShop() {
 function buyItem(it) {
   const p = player;
   if (it.owned) {
-    game.shopMsg = '你已经有了';
+    if (it.kind === 'weapon') {
+      p.weapon = it.weapon;
+      game.shopMsg = '换上了 ' + it.name;
+      sfx.bonfire();
+    } else if (it.kind === 'armor') {
+      p.armor = it.armor;
+      game.shopMsg = '穿上 ' + it.name + '（护甲 ' + armorValue() + '）';
+      sfx.bonfire();
+    } else {
+      game.shopMsg = '你已经有了';
+    }
     game.shopMsgT = 1.6;
     return;
   }
@@ -1336,6 +1485,11 @@ function buyItem(it) {
     p.ownedWeapons.push(it.weapon);
     p.weapon = it.weapon;
     game.shopMsg = '装备了 ' + it.name;
+  } else if (it.kind === 'armor') {
+    p.ownedArmors = p.ownedArmors || [];
+    p.ownedArmors.push(it.armor);
+    p.armor = it.armor;
+    game.shopMsg = '穿上 ' + it.name + '（护甲 ' + armorValue() + '）';
   } else if (it.id === 'flask') {
     p.maxFlasks++;
     p.flasks = p.maxFlasks;
@@ -1352,6 +1506,27 @@ function buyItem(it) {
     game.shopMsg = '耐力上限 +15';
   }
   game.shopMsgT = 1.6;
+  sfx.bonfire();
+}
+
+function cycleWeapon(dir) {
+  const p = player;
+  const list = p.ownedWeapons;
+  if (list.length < 2) return;
+  let i = list.indexOf(p.weapon);
+  if (i < 0) i = 0;
+  i = (i + (dir || 1) + list.length) % list.length;
+  p.weapon = list[i];
+  addFloater(p.x, p.y - p.r - 20, wpn().name, '#cfe0f0');
+  sfx.bonfire();
+}
+
+function selectWeapon(idx) {
+  const p = player;
+  const id = p.ownedWeapons[idx];
+  if (!id || p.weapon === id) return;
+  p.weapon = id;
+  addFloater(p.x, p.y - p.r - 20, WEAPONS[id].name, '#cfe0f0');
   sfx.bonfire();
 }
 
@@ -1470,7 +1645,7 @@ function updateEnemies(dt) {
       if (!e.hitDone && !e.ranged) {
         e.hitDone = true;
         if (d < e.atkRange + 20 && Math.abs(angleDiff(ang, e.facing)) < 1.0) {
-          const r = damagePlayer(e.dmg, e.x, e.y);
+          const r = damagePlayer(e.dmg, e.x, e.y, e);
           if (r === 'parry') {
             // 完美格挡把敌人打硬直
             e.state = 'stagger';
@@ -1595,7 +1770,7 @@ function updateBoss(dt) {
       if (!b.hitDone) {
         b.hitDone = true;
         if (d < 205 && Math.abs(angleDiff(ang, b.facing)) < 1.1) {
-          const r = damagePlayer(b.dmg, b.x, b.y);
+          const r = damagePlayer(b.dmg, b.x, b.y, b);
           if (r === 'parry') {
             b.state = 'stagger';
             b.stateT = 0;
@@ -1632,7 +1807,7 @@ function updateBoss(dt) {
         addEffect(makeShockwave(b.x, b.y, '#ffb06a'));
         sfx.hit();
         if (Math.hypot(player.x - b.x, player.y - b.y) < 155) {
-          const r = damagePlayer(b.phase === 2 ? 40 : 36, b.x, b.y);
+          const r = damagePlayer(b.phase === 2 ? 40 : 36, b.x, b.y, b);
           if (r === 'parry') {
             b.state = 'stagger';
             b.stateT = 0;
@@ -1966,6 +2141,27 @@ function drawFloor() {
     G.fill();
   }
 
+  // 篝火营地：被踩实的土色地面，让场景有「这里有人呆过」的痕迹
+  const campR = 190;
+  const cg = G.createRadialGradient(bonfire.x, bonfire.y + 6, 18, bonfire.x, bonfire.y + 6, campR);
+  cg.addColorStop(0, 'rgba(102,78,52,0.46)');
+  cg.addColorStop(0.55, 'rgba(86,68,47,0.24)');
+  cg.addColorStop(1, 'rgba(70,56,40,0)');
+  G.fillStyle = cg;
+  G.beginPath();
+  G.arc(bonfire.x, bonfire.y + 6, campR, 0, TAU);
+  G.fill();
+  const crnd = mulberry32(777);
+  for (let i = 0; i < 30; i++) {
+    const a = crnd() * TAU;
+    const dd = 26 + crnd() * (campR - 36);
+    const sx = bonfire.x + Math.cos(a) * dd;
+    const sy = bonfire.y + 6 + Math.sin(a) * dd * 0.72;
+    const sw = 2 + crnd() * 4;
+    G.fillStyle = crnd() > 0.5 ? 'rgba(56,48,36,0.5)' : 'rgba(124,106,76,0.32)';
+    G.fillRect(sx, sy, sw, sw * 0.72);
+  }
+
   // 世界边缘渐暗
   const edge = G.createRadialGradient(
     WORLD.w / 2, WORLD.h / 2, 620,
@@ -2099,6 +2295,14 @@ function drawObstacles() {
   for (const o of obstacles) {
     if (!visible(o.x, o.y, 160)) continue;
     drawShadow(o.x, o.y + o.r * 0.5, o.r * 1.05);
+    if (ART.column) {
+      const s = o.r * 1.62;
+      G.imageSmoothingEnabled = false;
+      G.filter = 'brightness(0.72)';
+      G.drawImage(ART.column, o.x - s / 2, o.y - s + 4, s, s);
+      G.filter = 'none';
+      continue;
+    }
     // 石柱主体
     const w = o.r * 1.5;
     const h = o.r * 2.1;
@@ -2293,6 +2497,158 @@ function drawAmbient() {
 }
 
 // ---------------- 渲染：实体 ----------------
+// ---------------- 手绘贴图（DCSS 素材，CC0 公共领域）----------------
+const ART_SRC = {
+  ghost: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABtklEQVR4nO1WO47CMBAdW1RU21KHE+QQtLkEXaQcYYvNCYKULnegoiB1avdIoaahhTar59VExgss44Sl4UmjjMdO3pvxJyZ6440XQw14N/XaZchHJqHki8Uim81mtnE4HKiu6yAROlAAgTxJEmuvQNp13c61K1Py3Aqs1+ur/kuqQIHZDyIvimJ3Op2swf9PEWnbtjZzEMPgIxYiQknJu67L3MD5fLbP6XRK+/2e5vP5SrIdNQVgtQIH9cQwxKIoEn9Lh2bPmft+27aZZCo0CYFMjTEXMZyE3CetgqaBcLP3hY0pIEX5schAgoxhIOfsOS6dBi1VzCSuv9lsLuISaMlgzO92u7U/ojzPbRvGpUffs37HpVKKeBfEcWytaRpLvlwuqaqqfrDkLJgIxFoRPMcoOchhLEgpxQcEk/M6KMdaA6Xb4NLzxeQGue8PEtATMjkvPkzDH4TpaFcy45HjiZ1wj2jsO6GFMebrx6NPCoQOeck/8UJOwFABKW7DTrl7IIa+O++Wg/+GRVFk2G5MeDweP2AsCH0Y8yg58OiFxGbuBuq6dg+bW/13yUUCrsT8Dz8y5he+AY62A/xHCTanAAAAAElFTkSuQmCC",
+  troll: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAD8ElEQVR4nJ1XLXPjMBBdewoKAwsFA/0TBAsNAwU704LAQsGDBu3MQcFCw0LDwsBCwcLAMHfeSquTP+PLzriOrbX27dunlVrQFXPO9Uop0loXeO66ro93Uh+WzDfx+1vtbosTgiGw957kImepuxC5PfXdmUjv6CYwxdIAJqZXR9qYAMI5AhNK6/TsrSF/CcHhCzPG/BeIcik4suFMiciDbqWYCTFmQhsODgboj+F3SqkebEmpbmbAKuqVDVljYgmOZwGgOpcYAAh1DwqsAIF+wAg/O+eKzRpwUtcY3BtDaoDOBmDaMAjRAMAkhv5aovvwPUAQUT8HolhiQETHao9ZS+aJge+O/F7znR4N6S9H/mBDEln2cRXxXNbaYvMq8JHmTgXh7XZQG9HpdOK7BuUQpicCrHZfY5DHERAg2O/iqSMroAZMlEvB3SEEhQkDAIDJq6ri61TVSYzn85nHcNV1zb4p8/tBAQdWLgL4oYIzMKHeMFCIyRnMV5tACTAEw3jbtqlUMJQCc+HCXGBhUwlcrCPMey+0cWckdaSuDSAk6/NHQ+fH4M+ALp48hdoziIMm89Gl0qwykKPPRdg0TYEMcUnGwoR6shwMAVCinHrWUxzP+0m5FhyOvJxGhsDIDuBEmDABCnAwBtF1hfQSKUPOwKqhq6FeWutJV4tq7sUHd+mC8q6u68F3eGetZR/RQbEGIDqONZDAxUkHIqVPR7vDkTWA/gAxyzdIBOzF+fi7Yg0A0OatGHTm2SC4XCgVapy3bZSgbdsBAIASbXjvX1Y1gK4l2y93uylD6Tc6Imqbi1AaVub/guAALEyUawBAswgGAQb2mbZfDgiQmBTPOQOZPUcWUnDY1T4gGU3AZXRjQtnxRBsjBjj4XALlSvCUPZYctABNDJZoXFoymWSIdyzCIM4U3Fr7Bl/e4J7sMgClFJbLv0D7QJvsZHE5pXHshLlJG+a2+0Bvg7FYSvG5GwdHlrJ1xtrKYXQ2yGi7fuaT06vhs0AK+BMPMwAdywUmmJFxcF77DzTbfCLF3EzgE5ep+D7LJQ2nqioel/eOqB/fyzx4TmmuVDGhHq329FClZpLvfLlhiwaLWuthppndSfD8rCeqnjMAlOUFoWEvQEPJfZxzL0qpN4j3Wt8v8Sfu0VxrCTw+Oomf1A93BEdzmZuY9/6o9IVk3hMAiv0edz4uyfOMce+PEy8Fj2PhxyeXIHxLNPEvaZuJwOh4PE5WxJKJVmCZDt5vAcCGwACwppE8eNM0dM1K/DHr2zJnjjXLfR5rPDt8zBl842FkdlMSQ9xZBpYAIbjUPzNQKlcyFmw8TY3Fms+/5R/J6UYyBbDVf+xLv/z62BfIPp+GAAAAAElFTkSuQmCC",
+  archer: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAACW0lEQVR4nNVWPWocMRT+tKRIYYggTSBFVLhwqSOodOkjqN8UOYHZE4QNrNuwR3DlLjC5gQ6whdKELVIosIWLgMLTz3js+bE0jAP5QKuR3pO+77150izwX0PBhwbAGBP6f4cNfGgaviXXUczLknYj1/Db7bZ9xgywWSIsEFqGAMwnAyll9X6sdoFzzjtz246tceBKQQgBznn1fqtSR9vsPbXwrDTa3pgozNwGn+wvz8teCatVnEk+vH2D799+wB6PUJcX4PKqzQCRmwNY7hfJQAYREYg8w3HZPm90OTmhWkCXkKJvjsdH5PYI6Msy8nooeCrCcO7fYZ1bKEznwnEk8uWJCXTWRRQQzjyRi85csuebsRSvapzBqQZ4OPdJVJy+4vFe4KjGqsiLonKA6BK8xu6pW7C75L+oAEc/GrYBgxAxWspCvhHDWEQ736AG7FkPtfFw6d41++ivhIe1wD0+hvGF2KGxDFI/RJ5959SAv/vif/76jfdfr8PlHzecEOvuY8/3aVxCPSGgRd6oS06VHnpBxLue6M/X02KrBJiBjZQEGlO3ZgIMtdAyZqArgrJBR2BvXu5r2BZfF4E4kQ/ZC7CqXQDrHl5Fdy7PV4LVOMuzWIDuFI5+u1ZxePenP7/8VYxhksaBBRF99/XAFjezBKgU5RT4GSBO8Bbpglo6A+40bptZAigXQMWeRRwGzKkmx+yLnAJ3AszhUXrXuTWmKO03swTo/r+cTNyDPA+t96kew6qEnP7nDUTfA2WBfEdE9KInPFsDpuJ9EpLQpxgkJ5RcGoOprsAoORn/At70F3BMlM8FAAAAAElFTkSuQmCC",
+  knight: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADAklEQVR4nL1Xr4/bMBj9Eh04NksbmI5cyqahkJGhjA0WnEZrfgcODhoOFnQ8lYamgfQPmOaSoQH/B3VZYeBYpufmy7lu2iSNbk+ynNiu3/t++HNKNAJlWVbGmMrvh+4RjyG31lKpNZk8b8YhZMg+VzQCojQkUuGerdZks4ySJBm0RzSU1OrcWSjSKRkhKNE52UzuBRnjRAFJJqNnERAKuX35gtY/t2R3O8o+vnHChBDRs+eASKeuBzmjFOngfeJLBfiEsF7vdifX6Tyr0Ggsqhpa6+boJUnSNIyh5Xle+WsfH22lVFVd7IGq3mi1WtFyuSQcP0ApRVLuE3Cz2bh+Pp+7HmvX6zWRVQeeCPeOushrax0pegDPaEIIStPUHb3ZbObEsSjM3fz9Rr93P9xvhLh1/dvrd/Tp85+odx3QON+1xQy8gxRzEMAAeZZlRGVON9evjsgBjH3/cuc8ASG9j0uWHboPAuARY4wj5gZxxiQkxL4gcT9NJWn7i8pyS2UJb1oqChn1PgWwDK7lcMB6AGMg5hzIvbLcB3GfRUqpCgKKomisxzusr+ePktKtE0/PPvzxeIjavXtNEzbEny2eTCaNkCGIuxZIKXHGG5ezkD4hsGVO71/fHeyHd4z3EqCUqkAAMrifrbfWRl0hQJJx1iMBgSz50JyMswK01hXHHeQg8l2PqtcVAs5+oDD7NTgFIeJwAGUUpOx233IGe+VcCNgD3J9C3GK9sxjEbeThujAE++J0nrTLAxHKaJjxbYC1fgjCGuBb77ufi1CrABbRRQ7AAwiVlPIBPXsEKAr5cChm2xqSmEaAL6dT7z78+2CUAKWUqwvID8Rba+0sRc9Ji3ml1AJe8C3me8D3TkwXwN14PedDEWForug/AAJwo3tCvl7qgfuueLeNsxdC64GLPIDj5sefUb8v2n7jkTfWA0M8cG+tXaBGnMt2APN1LQnFHJAPEeDI+fOsjwC+MT0RR+RA7xD4HxoB/I1djvA3JApT1xfSkL9mTQKeEXBqXav1mPgHpfNAYaks0HEAAAAASUVORK5CYII=",
+  hell: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADtElEQVR4nK1WMWgUQRR9uwaxMLAihBSBLEFErM4QwUK8tbOJHBa2GetcceV1rt2VV1z6tQtWARs7J5AioISrJASRFVIcQXExKYIQRv7s/LvZ3dvNXvTBcHOzf+e///6fPwv8IySgYkBFgLrK++6sLyjLETlvmrkPwCZh2/1XAg7g0Obs/DuA2HoeAoqek91/JaCsiHjzBzmbfu55HRXcWSPnIc36sgI6AJrGFamhaqjA5Ny6BJgED/q/QyoYF/TbGdtJPQCpi7OqQN0qdkVIlQ4KMCs7kZmAqqMJiUAX54bZk4nY6szViZxepI2AAIHhFkJCIJhimyYngpMpThgiqFugyrCNsnnXUcgosMpBKqr8iTJK25ENy38eCzXcbqXruZQ4l0VOrHeto+ZHASCklnbZ5JtBkttY3VvH9aXben64n+AoPsZC97PeS9RNwe4lz2Pj1Jab597xNazgpyaxsnSBozhrV4uAjRd76zh4/F7PG57X5vVfSTLIr3WSZNAAtPM/xymJhcVTnPTW8LL7iUJTQOBUEiC5V+/M6/kqgCfGOVd+FVrbLf1LzhneDQ8nOMvYzZVvIVUgmmjkymSoJZfYSZJBy4rYBkXP82+UhqWLUi9OFQE6y7/3nuPg6yk6QloE0uPmmxN/y/PawyQZUH553O+tYWHxprZlFSkN+zLGyejMpMFxKjsh9bN5kl1ItDppJ2BwD6DLiPPPzglfRj+0I1bBToMNFzWgN+7H4+i1ApEYR2vb2fZMIjlPMiRqEFCKznTTHEMSP8o5t9FPkgHnnZwPqWdGUWFXKsh7j2ZUIC5Zj4SgRlVQ4AMwLky/EWZUmOEycnT0b6dEX2QSoQu0Q7onogiLgFaiL7IqETgNd/0lvOs9LCMgFXe/ac4DSB09QUyRuZNbi3K1kE+DOy0ocvwK9dAVoj1CoKMWYuJ8RKqI4n2ZK8bNqY0oHF9WpEVYSeB8yhq14MCkgi4zp+8j7KTV4vmevpgY7iUB5ohJfDTzQ6BN0ScmekYshG5Q/CHyht/t+zoVdCPacIvdzwZ/dE9AhUmy9oDBMxNllmRQ6A+oIOGWx0vyP8VVke2bWRI23KJJMep8dK9rECjrHwRSgQZhrlz+qziQ3IT0xcTpUvpWmTSosA+EHZ/St+UUCTRzJ2C8qUZk8s55nvSJrJ0ABlyMfGtaJLZqfhHJzKYhMNgwkcUlNhbRNr9DtpMvx4nzHIHAqZsG3oyd5GA72AyzNhnnhLIPks1piyx/2qKrN66LvwEosXE5u8YzAAAAAElFTkSuQmCC",
+  ogre: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADzklEQVR4nK1Xz2sTURCeDVHEiwWLqNU2Be2hiPaih14MHiTWgz2WVkIQKoK9NKDk1KYBIVRIFZJLe3BZtH+AYA0Kmh7qoUIJIjlUwdhaFamgFxEKrnzvZdLZ7e4mjX4Q3ts382a++d6P3RjUIuyF+zYd7yRaX6PPmz+pIz5htBInFGQ0B8lO9JHtHt+wMnpsfY0UCTn2vwiYg2RXf+h+NLKTBKpmEkfbD1CrCAcZI207x5ZnkorMbPGVek5fvUTph0/rKux2KcKNqkfLfeDdl03qONhG12P9tPFdGy6f7d1NzsYEuHok9lIBiUGiMp6jijTMJJUKsJ8bzxn/RKBaS87VQ/onr7fTzcUnds4Zz9GolVEqMRH0R6Yto6VTUBXyo+KeY4do9dM3FRQYLJfrvtznZeHk0VMnFPlHt+Oep8RwD8C5sphzELiTzNQDA1DCb91hA1Hg5JH2Ogk/NQx3clQKZ5Dg6geuJNVkVM+J5XJISDuIMAlJSJIw3MlLb98rRyaAX1dvjKbmiwZkhA1+Um6GHMcmnByOKdndakkSYTkZE5EA7A0RG8k5GPvJYEyKx7lizKu5qbmsCH6OTbhcu1xYuu5fRdWX5583oLtqhhyHn9x0IMLJQZQJ1hWQA3DcWtV9HMN0aXuZIKX0BbgaOe7l54cwM5ZrW6kRYAVYfgA72qt6KatIfpOICvzgXj4gxBLJXd17PtkUexmYyXsAJBwEUbCDAJPACeBAo9cy6vwDiwt6TwDN7AGZDMB+gCqIH3gVj0xbardjDd2JnlsWUTxOjcDyz81anDzPFxHbp+aLY54ExNGx+TYDEjeISqYm0XUhRhJ3n72hWxdPO+SVivH+ks8SBnkgHdWvY7Os7WaK7MhhIjOr7ZF9urX7nWQ+vqgd39+adCJLqtLJ4ViefUT1BV8C+Azj5IkY2dE+oupXIrQgwQTcQGI1J0VkFrU/k/BAwf+DpJYcQBBUj1+pTJS+p1tFJuWcF01oP57XDEJBRlSPFglfLsdUUE6ONgE1hrZbTgobE26ZgJnS0rurQf/BY01G2nic+0zYB4WGBBJZvQwf1nTQ7s6ioypukVRWyn2cooD1b3IJsprEfjtJe/7EVXC0TAzP2NVcPZIOnNG3aO1LKB9UPRD4We6+arf2Ei2t6DF5mbgBwkAzL6RQkBG3IqrCLYbf0kpcXSSu5IXIkPM487U7Mm2NBVUPNKVAQCUFr48W97ugZQV6xBcMB3XfZH6E1avXyuTFPvD0DzdiyNW77nCvYOq1Cz8Q93rzeSHo34sK6ANfArvwV/gLmLwsxT6MOKoAAAAASUVORK5CYII=",
+  column: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAB/UlEQVR4nOVW27GCMBCNDAXYgXagJdiBlOA/94NS+JB/SkgJloAdxA7ogDsnw+GuMeERB/24Z0bDhOyek83uBqW+jE2sYVEUdjydTirLsmgBSYyRMcYSA8fjMZo8WsBut3siZjT+HfL+tx66rlNaay95URSd1rrrn732mA/Yz8uBx+OhbrebdeI62263djTGXMuyHCKBisA6jLCBfbSApmnUfr+3CYfxfD6/CHDBtfi1baumkI69ZH3DGXC/34d3mEM5+gQcDgdbpnNKNJ1cIYS45wkBFNcnZLW0KSVLFkvnbEY446ZprotYYwW4wO4hoq5r9XEB+7/Qe3NhdQEAkg24XC4qFmmsIXeNSIRKctUIGGOGRvUOEvVlJO86QCTQMT+ZAzn+UH4kFlUgb8dqjU+yvK7rK4mRgMgBNiQ0KrRf9IWyLH/miEiXkLPjuSFnSya5tBHP1TsRyEEuy61vwU99AOQ8Ds7x0sqyzBuRNIYccG87uXOQs1OCXJTqS0TSKXKt9XDmAO74UOMBGcmxBnYgD7Rqe3umU+SS2EfOj44Q+RQ2Y+QMI5yBAI4pgMQc+SXkksNOa43zd1GFBFhyOHQ/qeBcRsH3fgk54D0COOa5M/Qk8JHLOTk/RR4UIAlk6BkB3+4l5ux8VEA7smtXgE/UXHIgmISB+VgEW/Ivo7VO2TQhoFIAAAAASUVORK5CYII=",
+  stump: "iVBORw0KGgoAAAANSUhEUgAAABsAAAAfCAYAAAAWRbZDAAADAElEQVR4nL2WvWoqQRTHjxeLCEokESwkmFoI2UdQCKQTm5RCwHJT7CPY2G+x9ulsLPYRfIKwhWAhCVtE1CIiJppoEcN/7j3LcXR1r1zuAZlxZ/b8ztecWaL/KLF9i4ZhbD1Lp9PU6XT+HczYAWGQ/t913eNhlUpFjdPpVP1YqQ7SxY0A3YBZlqVG3/cDmA66vLzcUuL7fiRgnCf1en1DKSvgZ4DoIOzBOp7z/kgwDiG8kQUgAbwuQfwf+7C+z7s4e3V/f69ehBIG8FwCpacc7qjyiyeAXV9fB15Ji/EM+YTV+XxejY+Pjxvw9J9wRgojQlAqldS8WCwqmB5CQDhMXLUShCMDb8NCGcA45iwcQowM4nU9rNPpVIE8z4vmmVSClzh/+pqcH50ziCwGWAwoPMLIYKzLIpFyqPyDQ23btsoVh0VWpWEYJu/zPK/JOYIh0ggUzcHSh0gA4g84qtC2bbNcLjuFQoE+Pj42+ibnsF6vN6M055jeQSzLCryAmKbpzGYzmkwmVC6XabFYUC6Xo9FoRL1eTxnZarUeLMtq7qvEDRjrrlarzt3dHb2+vlK73aavry86OTmhWq1G4/GYTk9P6fz8nBKJBL29vdFwOFSGNBqNByJqRq5GyNXVlVK6Xq/p5uaGvr+/6ezsjLLZLKVSKeXZcrmkwWCgjPj8/KTVakV/XY2Q5+dnms/nKqQIy8vLC72/v1O321WeJJNJZQggAMKwfr9/9OVp3t7eOhcXFyovKAqAURgY4Wkmk1GGPD09qRdc1z0YwjCYAlYqFUceWL33AYai4h5p2zaAUpqRYZ7nOXyg5Y3NwiA+Z2jkENHitryNh4GgmBWwSE/ZIwbJFibOnDxGTR1muq7ryIbKnwa7BIoZxO0NoJC2ZcZ1kITsAsmbehdon8QkSHZ9vvYZxhAeUZ27QP7vLvIQBlMgvKxfF9yUdaBcjwoKcgYlnKew70X9GOh7IftAW10fIsMnv572XZL+AY94EngW5o0O22VAFBAkKJBQs4+XrQ7yAwMtJJBikq+bAAAAAElFTkSuQmCC",
+  statue: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEl0lEQVR4nJ1WS0srSRSujsGFBkdJLgoqIW5GJ0YX4sbnMLgxzNKF/gEN2AsDisisBH9Cz1/QlbsxbmQcwcdKdIwZHQcTNSrCNT6jggszfAdP3epOd+zrB9WnqvrxnfOdU1WtFQoF4QRN08aFSxQKhd/FJ+AtRTwzM2PwXCaTIbu6uqrDBgIBIxgM0tzp6Sne+ZQzXjvy4eFhQyVlhEIhkNG9dDoNR6j/7oh0lp1x44impgDkAwMD8kNOCAQCjmqwIkAqldI/ckKDAyCura0VkUjEQJRtbW10c29vT7ASmOf+09OTGBkZEefn5/JDS0tLsq+mBtjf3/+WHws8IA+Hw6aoI5EIKyIuLi5EeXk5PkIN5MDDw4MkraqqEt3d3UXEPC5VzF5+8Pr6WpLOz89TH+rU19dT1K2trVIBOHR2dkbvgRzOVFdXm1KAhvtcH/iuXTo81gmQQgHYx8dHUgBRw7ICt7e3YmNjg5yCAw0NDeLu7s4xBaXgUQeIDETJZJLIERkUqKysJAtC9FUSBisAZ9T7cBZ9pNkuFR518Pr6SkQoLia3A5xAdEzGxGoa3MJjNzk4OGgiTyaTOpThgkSzKsBO2AHzSJWdCl518Pb2JlZWVuQ4lUqJ4+NjvaKiwjg4OKC5lpYW+iBUQnMidQsPKjORSOgdHR0GNg6sdxCjhcNhuTcAsO3t7XL9q2sfKVP3BaQIUdfU1JR0wIsLnMAyiUajBl7EmsbH4ATyitqIxWJU6blcTioAwIKIoTqhkqMPJ20dUJ0AYrGYgaWo7oRMjqUI3N/fi3w+L+zA0QPsLFaDHbzq4N2J8YWFBdNDUGFtbY1sPB4XqAeQqPXyEeyiB2gVWCszGo1S6+npEXNzc3IX5I0FhcirgOsABFCHn4HkXKC8K9o6oGnaeDweNy0PbLObm5tifX3d9DB/xO/3m85/a3R4Tq0TjJ12RQ8uTU1NpklE0tXVRQoAnZ2dUgWQoxbUYxwqcPTIPezy8rJUgHdDRwfq6uqEqgJybVUA0UxOTsoCVMGk1mWH8wLvYQ73S66CcDhMTlxdXdHDqAEA0SJqkKMP8svLS7G9vS18Pp/JCSYHEZ+SHx1IHjUikKPAgEQiQR/AHIit5Lu7uyZijhIHGZPDcsM4m83qRQoUlPU/NTVlICrON/KK/GL3a25uFoeHhyQrgOfwa9bY2EjjbDZL+wKThEIhg3/dUNQvLy9F5KYUjI6OYium3Q/FA3JE/Pz8LLa2tqipAFlZWZnjBpPL5eRPq6t/Qt97Pvv6+uglnA/9/f2GGiFwcnICqfVgMGj09vba3kNffReBIKBMJmNSAerL49jv9xtoyCPIMYdCxJYMgrGxMTE0NCRfXlxcFDs7O2JiYkLMzs4WRTY9PU3v3tzcyOVcFL2mjZsOI9UzXpKQnv8X+RwAjo6OpMU2jehVoBjT6TQVJmzJFNgBDvz8y6+Ujq9fr+R8Pn8vfL4fTNYtTjP/6a7+iKz48qWOGmAlh+X5z0CzUwDRj+m/fVjBwL///C1+/KmdrBv89ecf+ncrIGxIreSwAFs3oFpzUuAzjn0v4MD/cknzXAl7pkQAAAAASUVORK5CYII="
+};
+
+const ART = {};
+const ART_W = {};
+
+function makeWhite(img) {
+  try {
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    const cx = c.getContext('2d');
+    cx.drawImage(img, 0, 0);
+    cx.globalCompositeOperation = 'source-atop';
+    cx.fillStyle = '#ffffff';
+    cx.fillRect(0, 0, c.width, c.height);
+    return c;
+  } catch (e) {
+    return null;
+  }
+}
+
+function loadArt() {
+  if (typeof Image === 'undefined') return;
+  for (const k of Object.keys(ART_SRC)) {
+    const im = new Image();
+    im.onload = () => {
+      ART[k] = im;
+      const w = makeWhite(im);
+      if (w) ART_W[k] = w;
+    };
+    im.src = 'data:image/png;base64,' + ART_SRC[k];
+  }
+}
+
+// 贴图绘制：脚底对齐、可水平翻转、受击时用白色剪影闪一下
+function drawArt(img, x, y, flipX, scale, flash, whiteImg) {
+  const s = 32 * (scale || 1);
+  G.save();
+  G.translate(x, y);
+  if (flipX) G.scale(-1, 1);
+  if (G.imageSmoothingEnabled !== false) G.imageSmoothingEnabled = false;
+  if (!flash) G.filter = 'brightness(0.86)';
+  G.drawImage(flash && whiteImg ? whiteImg : img, -s / 2, -s + 7, s, s);
+  G.restore();
+}
+
+// 手上的兵器：按武器类型分别绘制
+function drawWeapon(p, ang) {
+  const kind = wpnKind();
+  const ox = p.x + Math.cos(p.facing) * 8;
+  const oy = p.y + Math.sin(p.facing) * 8 + 2;
+  G.save();
+  G.translate(ox, oy);
+  G.rotate(ang);
+  if (kind === 'spear') {
+    px(-9, -1, 31, 3, '#3b4657');
+    px(-9, 0, 30, 1, '#8a6a34');
+    px(-9, -1, 30, 1, '#a88a58');
+    px(13, -2, 7, 5, '#3b4657');
+    px(14, -1, 6, 3, '#b6c6d6');
+    px(14, 0, 6, 1, '#e8f1f9');
+    px(20, 0, 2, 1, '#f2f8fd');
+    px(-11, -2, 3, 5, '#6b5232');
+  } else if (kind === 'bow') {
+    G.strokeStyle = '#3b4657';
+    G.lineWidth = 3.5;
+    G.beginPath();
+    G.arc(3, 0, 9, -1.4, 1.4);
+    G.stroke();
+    G.strokeStyle = '#a07a42';
+    G.lineWidth = 1.8;
+    G.beginPath();
+    G.arc(3, 0, 9, -1.4, 1.4);
+    G.stroke();
+    G.strokeStyle = 'rgba(226,236,246,0.8)';
+    G.lineWidth = 1;
+    G.beginPath();
+    G.moveTo(3 + Math.cos(-1.4) * 9, Math.sin(-1.4) * 9);
+    G.lineTo(3 + Math.cos(1.4) * 9, Math.sin(1.4) * 9);
+    G.stroke();
+    if (p.state === 'shoot') {
+      G.strokeStyle = 'rgba(200,220,240,0.55)';
+      G.beginPath();
+      G.moveTo(-2, 0);
+      G.lineTo(9, 0);
+      G.stroke();
+    }
+  } else if (kind === 'gun') {
+    px(-4, -2, 14, 5, '#3b4657');
+    px(-4, -1, 13, 3, '#8e949c');
+    px(-4, -1, 13, 1, '#c4cad2');
+    px(8, -2, 3, 4, '#3b4657');
+    px(-7, 0, 4, 5, '#6b5232');
+    px(-7, 4, 4, 2, '#4a3822');
+    px(-1, -3, 2, 1, '#5a6470');
+    if (p.state === 'shoot' && p.stateT < 0.16) {
+      px(11, -1, 4, 3, '#ffe0a0');
+      px(15, 0, 3, 1, '#fff2cc');
+    }
+  } else if (kind === 'shield') {
+    // 右边短剑
+    px(0, -4, 4, 9, '#3b4657');
+    px(3, -2, 12, 5, '#3b4657');
+    px(3, -1, 11, 3, '#8e9cae');
+    px(3, -1, 11, 1, '#6d7b8d');
+    px(3, 1, 11, 1, '#e8f1f9');
+    px(13, -1, 3, 2, '#aab8c8');
+    // 左手大盾（不跟着武器角度旋转）
+    G.rotate(-ang);
+    G.save();
+    G.translate(-Math.cos(p.facing) * 6 - 8, -Math.sin(p.facing) * 6 + 2);
+    G.rotate(p.facing);
+    px(-5, -13, 12, 27, '#3b4657');
+    px(-4, -12, 10, 25, '#7d8a99');
+    px(-4, -12, 10, 2, '#a2b3c4');
+    px(-2, -8, 6, 16, '#5c6875');
+    px(-4, -1, 10, 2, '#c9a24a');
+    px(-1, -10, 4, 4, '#c9a24a');
+    G.restore();
+  } else {
+    // 长剑
+    px(-7, -2, 7, 5, '#3b4657');
+    px(0, -4, 4, 9, '#3b4657');
+    px(3, -2, 16, 5, '#3b4657');
+    px(-6, -1, 5, 3, '#6b5232');
+    px(-6, 0, 5, 1, '#8a6a34');
+    px(-7, -1, 1, 3, '#2a3140');
+    px(0, -3, 3, 8, '#8a6a34');
+    px(0, -3, 3, 1, '#d0a94f');
+    px(0, 3, 3, 2, '#5e4722');
+    px(1, -1, 1, 2, '#7fd4ff');
+    px(3, -2, 13, 4, '#8e9cae');
+    px(3, -2, 13, 1, '#6d7b8d');
+    px(3, 1, 13, 1, '#e8f1f9');
+    px(5, 0, 9, 1, '#c6d2de');
+    px(16, -1, 3, 2, '#aab8c8');
+    px(19, 0, 2, 1, '#e8f1f9');
+  }
+  G.restore();
+}
+
 function drawPlayer() {
   const p = player;
   if (p.dead) return;
@@ -2344,32 +2700,7 @@ function drawPlayer() {
     swordAng = p.facing + Math.PI / 2 + (p.parryWin > 0 ? Math.sin(p.stateT * 40) * 0.06 : 0);
   }
 
-  // 剑（像素：深色描边 + 柄 + 护手 + 宝石 + 分层剑身 + 剑尖）
-  G.save();
-  G.translate(p.x + Math.cos(p.facing) * 8, p.y + Math.sin(p.facing) * 8 + 2);
-  G.rotate(swordAng);
-  // 描边底（钢蓝灰细边，不做纯黑轮廓）
-  px(-7, -2, 7, 5, '#3b4657');
-  px(0, -4, 4, 9, '#3b4657');
-  px(3, -2, 16, 5, '#3b4657');
-  // 柄
-  px(-6, -1, 5, 3, '#6b5232');
-  px(-6, 0, 5, 1, '#8a6a34');
-  px(-7, -1, 1, 3, '#2a3140');
-  // 护手
-  px(0, -3, 3, 8, '#8a6a34');
-  px(0, -3, 3, 1, '#d0a94f');
-  px(0, 3, 3, 2, '#5e4722');
-  px(1, -1, 1, 2, '#7fd4ff');
-  // 剑身（刃背暗 / 主体中灰 / 刃口亮线，别用纯白）
-  px(3, -2, 13, 4, '#8e9cae');
-  px(3, -2, 13, 1, '#6d7b8d');
-  px(3, 1, 13, 1, '#e8f1f9');
-  px(5, 0, 9, 1, '#c6d2de');
-  // 剑尖
-  px(16, -1, 3, 2, '#aab8c8');
-  px(19, 0, 2, 1, '#e8f1f9');
-  G.restore();
+  drawWeapon(p, swordAng);
 
   // 格挡架势：身前立一块护光（完美格挡窗口内变金色）
   if (p.state === 'block') {
@@ -2430,6 +2761,17 @@ function drawPlayer() {
 
   // 身体（统一朝右画，朝左镜像）
   const flip = Math.cos(p.facing) < 0 ? -1 : 1;
+  const artP = ART.knight;
+  if (artP) {
+    G.save();
+    if (p.state === 'roll') {
+      G.translate(p.x, p.y + 1);
+      G.rotate(p.stateT * 14 * flip);
+      G.translate(-p.x, -(p.y + 1));
+    }
+    drawArt(artP, p.x, p.y + 1, flip < 0, 1.0, p.flash > 0, ART_W.knight);
+    G.restore();
+  } else {
   G.save();
   G.translate(p.x, p.y + 1);
   G.scale(flip * 1.0, 1.0);
@@ -2495,6 +2837,7 @@ function drawPlayer() {
     G.globalAlpha = 1;
   }
   G.restore();
+  }
 
   // 篝火附近的暖光
   const bd = dist(p, bonfire);
@@ -2543,90 +2886,110 @@ function drawEnemy(e) {
 
   const big = e.type === 'brute';
   const flip = Math.cos(e.facing) < 0 ? -1 : 1;
-  const bobAmp = big ? 0.5 : (e.type === 'hollow' ? 2.2 : 1.0);
+  const bobAmp = big ? 0.6 : (e.type === 'hollow' ? 2.6 : 1.1);
   const bob = Math.sin(game.time * 4 + e.x * 0.05) * bobAmp;
   const hurt = e.flash > 0;
+  const wind = e.state === 'windup';
+  const ph = game.time * 2.8 + e.x * 0.06;
 
-  // 四类敌人在剪影上就要能分开：亡魂瘦高飘、巨汉宽壮驼、弓手细长带弓、盾卫方正抱盾
-  let parts;
-  if (big) {
+  // 四类敌人在剪影上就要能分开：亡魂瘦高飘、巨汉宽肩驼背、弓手蹲伏细长、盾卫方正抱盾
+  let parts, eyes;
+  if (e.type === 'hollow') {
+    const sw = Math.sin(ph) * 1.5;
     parts = [
-      [-13, -25, 26, 9, '#5d5b48'],
-      [-13, -25, 26, 3, '#73705a'],
-      [-11, -17, 22, 12, '#4a4938'],
-      [-11, -17, 22, 2, '#5d5b48'],
-      [-9, -14, 18, 8, '#7d7a62'],
-      [-9, -14, 18, 2, '#8d8a70'],
-      [-4, -27, 9, 6, '#3a3830'],
-      [-4, -27, 9, 2, '#4d4a3e'],
-      [-4, -21, 9, 2, '#1b1a16'],
-      [-14, -20, 4, 16, '#6e6b56'],
-      [10, -20, 4, 18, '#6e6b56'],
-      [-8, -5, 6, 7, '#3d3b32'],
-      [2, -5, 6, 7, '#3d3b32'],
+      [-2, -32, 4, 3, '#5b5570'],
+      [-4, -29, 8, 3, '#4f4a63'],
+      [-6, -26, 12, 7, '#3f3a52'],
+      [-6, -26, 12, 2, '#524d67'],
+      [-4, -24, 8, 6, '#14121c'],
+      [-7, -20, 14, 4, '#45405a'],
+      [-7, -20, 14, 1, '#5a5470'],
+      [-6, -16, 12, 12, '#383349'],
+      [-6, -16, 12, 1, '#4a4460'],
+      [-9, -18, 2, 9, '#2e2a3c'],
+      [7, -18, 2, 9, '#2e2a3c'],
+      [-10, -9, 3, 2, '#cfc7b0'],
+      [7, -9, 3, 2, '#cfc7b0'],
+      [-7, -4 + sw * 0.5, 4, 3, '#2f2b3e'],
+      [-3, -4 - sw * 0.3, 3, 4, '#2f2b3e'],
+      [0, -4 + sw * 0.4, 3, 3, '#2b2838'],
+      [3, -4 - sw * 0.5, 4, 4, '#2b2838'],
     ];
+    eyes = [[-3, -22, 2, 2], [1, -22, 2, 2]];
+  } else if (big) {
+    // 逐行收放宽度堆出圆润的驼背轮廓，避免「一堆方块」
+    parts = [];
+    const prof = [[-34, 10], [-32, 16], [-30, 20], [-28, 22], [-26, 22], [-24, 21], [-22, 19], [-20, 18], [-18, 17], [-16, 16], [-14, 16], [-12, 17], [-10, 16], [-8, 15]];
+    for (let i = 0; i < prof.length; i++) {
+      const yy = prof[i][0];
+      const ww = prof[i][1];
+      const shade = i < 4 ? '#6b6750' : (i < 10 ? '#5b5744' : '#4e4b3c');
+      parts.push([-Math.floor(ww / 2), yy, ww, 2, shade]);
+    }
+    parts.push([-8, -26, 16, 6, '#8a8668']);
+    parts.push([-8, -26, 16, 1, '#a39e7c']);
+    parts.push([-5, -21, 10, 9, '#454236']);
+    parts.push([-5, -21, 10, 1, '#59543f']);
+    parts.push([-13, -28, 4, 17, '#77745c']);
+    parts.push([-13, -28, 1, 17, '#8f8b6e']);
+    parts.push([9, -28, 4, 17, '#77745c']);
+    parts.push([9, -28, 1, 17, '#8f8b6e']);
+    parts.push([-11, -35, 3, 5, '#bdb59c']);
+    parts.push([8, -35, 3, 5, '#d8cfb6']);
+    parts.push([-8, -9, 6, 9, '#3d3b32']);
+    parts.push([-8, -2, 6, 2, '#2e2c26']);
+    parts.push([2, -9, 6, 9, '#3d3b32']);
+    parts.push([2, -2, 6, 2, '#2e2c26']);
+    eyes = [[-2, -19, 2, 2], [1, -19, 2, 2]];
   } else if (e.type === 'archer') {
     parts = [
-      [-3, -26, 6, 4, '#3f5a4a'],
-      [-3, -25, 6, 2, '#16211b'],
-      [-3, -26, 6, 1, '#517a62'],
-      [-4, -22, 8, 10, '#37503f'],
-      [-4, -22, 8, 1, '#456050'],
-      [-5, -19, 1, 8, '#2a3c31'],
-      [4, -19, 1, 8, '#2a3c31'],
-      [-3, -12, 2, 10, '#243028'],
-      [1, -12, 2, 10, '#243028'],
-      [-3, -2, 2, 4, '#1b241f'],
-      [1, -2, 2, 4, '#1b241f'],
+      [-3, -26, 9, 2, '#2a3c31'],
+      [-2, -24, 7, 5, '#3f5a4a'],
+      [-2, -24, 7, 2, '#2a3c31'],
+      [-4, -19, 9, 9, '#37503f'],
+      [-4, -19, 9, 1, '#48664f'],
+      [-5, -17, 2, 7, '#2a3c31'],
+      [-5, -10, 2, 2, '#1f2e24'],
+      [-4, -10, 3, 6, '#243028'],
+      [0, -10, 3, 6, '#243028'],
+      [-4, -4, 3, 3, '#1b241f'],
+      [0, -4, 3, 3, '#1b241f'],
     ];
-  } else if (e.type === 'shield') {
-    parts = [
-      [-6, -26, 12, 5, '#5a5d6b'],
-      [-6, -26, 12, 1, '#72768a'],
-      [-5, -21, 10, 3, '#24262d'],
-      [-7, -18, 14, 14, '#4a4d59'],
-      [-7, -18, 14, 1, '#5f6372'],
-      [-9, -18, 2, 5, '#5f6372'],
-      [7, -18, 2, 5, '#5f6372'],
-      [-7, -4, 14, 2, '#3a3d47'],
-      [-6, -4, 5, 6, '#33353d'],
-      [1, -4, 5, 6, '#33353d'],
-    ];
+    eyes = [[-1, -22, 1, 2], [3, -22, 1, 2]];
   } else {
     parts = [
-      [-2, -28, 4, 3, '#4f4b5e'],
-      [-4, -25, 8, 3, '#4a4658'],
-      [-6, -22, 12, 6, '#3d3a48'],
-      [-4, -21, 8, 4, '#15141c'],
-      [-6, -16, 12, 14, '#43404e'],
-      [-6, -16, 12, 1, '#565370'],
-      [-8, -14, 2, 12, '#33313c'],
-      [6, -14, 2, 12, '#33313c'],
-      [-6, -2, 3, 3, '#2b2a34'],
-      [-2, -2, 3, 4, '#2b2a34'],
-      [2, -2, 3, 3, '#2b2a34'],
-      [-1, 1, 2, 2, '#2b2a34'],
+      [-7, -27, 14, 6, '#5a5d6b'],
+      [-7, -27, 14, 2, '#72768a'],
+      [-6, -22, 12, 3, '#24262d'],
+      [-8, -19, 16, 14, '#4a4d59'],
+      [-8, -19, 16, 1, '#5f6372'],
+      [-10, -19, 3, 6, '#5f6372'],
+      [7, -19, 3, 6, '#5f6372'],
+      [-8, -6, 16, 2, '#3a3d47'],
+      [-6, -5, 5, 6, '#33353d'],
+      [1, -5, 5, 6, '#33353d'],
+      [-6, -1, 5, 2, '#26282f'],
+      [1, -1, 5, 2, '#26282f'],
     ];
+    eyes = [[-4, -21, 2, 1], [2, -21, 2, 1]];
   }
+
+  const artKey = big ? 'troll' : (e.type === 'hollow' ? 'ghost' : (e.type === 'archer' ? 'archer' : (e.type === 'shield' ? 'hell' : 'knight')));
+  const art = ART[artKey];
+  if (art) {
+    drawArt(art, e.x, e.y + bob * 0.5, flip < 0, 1.28, hurt, ART_W[artKey]);
+  } else {
   G.save();
   G.translate(e.x, e.y + bob);
   G.scale(flip, 1);
   for (const q of parts) px(q[0] - 1, q[1] - 1, q[2] + 2, q[3] + 2, '#12151c');
   for (const q of parts) px(q[0], q[1], q[2], q[3], hurt ? '#ffffff' : q[4]);
-  // 眼睛（闪白时也保留，保持辨识度）
-  if (big) {
-    px(-2, -26, 2, 2, '#ff5a3a');
-    px(2, -26, 2, 2, '#ff5a3a');
-  } else if (e.type === 'archer') {
-    px(-2, -24, 1, 2, e.state === 'windup' ? '#ff5a3a' : '#9ad6b0');
-    px(1, -24, 1, 2, e.state === 'windup' ? '#ff5a3a' : '#9ad6b0');
-  } else if (e.type === 'shield') {
-    px(-3, -20, 2, 1, e.state === 'windup' ? '#ff5a3a' : '#ffdca0');
-    px(1, -20, 2, 1, e.state === 'windup' ? '#ff5a3a' : '#ffdca0');
-  } else {
-    px(-3, -22, 2, 2, e.state === 'windup' ? '#ff5a3a' : '#ffdca0');
-    px(1, -22, 2, 2, e.state === 'windup' ? '#ff5a3a' : '#ffdca0');
-  }
+  const eyeCol = hurt ? '#ffffff'
+    : wind ? '#ff5a3a'
+      : e.type === 'hollow' ? '#ffc07a'
+        : e.type === 'archer' ? '#a8e6c0'
+          : big ? '#ff6a44' : '#ffa070';
+  for (const q of eyes) px(q[0], q[1], q[2], q[3], eyeCol);
   G.restore();
 
   // 盾兵的盾（朝向前方，破防时半透明显虚线）—— 占半个身位的大方盾
@@ -2649,9 +3012,9 @@ function drawEnemy(e) {
     G.save();
     G.translate(e.x, e.y + bob);
     G.scale(flip, 1);
-    px(13, -14, 4, 24, '#4a3a26');
-    px(12, -19, 6, 7, '#6b5232');
-    px(12, -19, 6, 2, '#7d6138');
+    px(10, -26, 5, 30, '#4a3a26');
+    px(9, -31, 7, 8, '#6b5232');
+    px(9, -31, 7, 2, '#7d6138');
     G.restore();
   }
 
@@ -2684,6 +3047,7 @@ function drawEnemy(e) {
       px(3, -1, 2, 2, '#9ad6b0');
     }
     G.restore();
+  }
   }
 
   // 锁定标记
@@ -2965,6 +3329,15 @@ function drawUI() {
   ctx.fillStyle = 'rgba(230,240,190,0.9)';
   ctx.fillText(Math.round(p.stamina) + '/' + p.maxStamina, x + stamW + 8, stamY + 12);
 
+  // 当前兵器与护甲
+  const av = armorValue();
+  ctx.font = 'bold 12px "Microsoft YaHei", Georgia, serif';
+  ctx.fillStyle = 'rgba(205,225,245,0.92)';
+  ctx.fillText(wpn().name, x + stamW + 8, stamY + 30);
+  ctx.font = '12px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = av > 0 ? 'rgba(150,205,250,0.9)' : 'rgba(150,160,170,0.5)';
+  ctx.fillText('护甲 ' + av, x + stamW + 8, stamY + 46);
+
   // 原素瓶
   const flaskY = y + 68;
   for (let i = 0; i < p.maxFlasks; i++) {
@@ -3057,7 +3430,7 @@ function drawShop() {
   const p = player;
   const list = shopList();
   const pw = Math.min(720, W - 120);
-  const ph = Math.min(470, H - 100);
+  const ph = Math.min(H - 70, list.length * 33 + 148);
   const ox = (W - pw) / 2;
   const oy = (H - ph) / 2;
 
@@ -3093,40 +3466,40 @@ function drawShop() {
   ctx.lineTo(ox + pw - 24, oy + 58);
   ctx.stroke();
 
-  const rowH = Math.min(56, (ph - 150) / list.length);
-  const startY = oy + 86;
+  const rowH = 33;
+  const startY = oy + 78;
   for (let i = 0; i < list.length; i++) {
     const it = list[i];
     const ry = startY + i * rowH;
     const sel = i === game.shopSel;
     if (sel) {
       ctx.fillStyle = 'rgba(255,210,140,0.10)';
-      ctx.fillRect(ox + 20, ry - 2, pw - 40, rowH - 4);
+      ctx.fillRect(ox + 20, ry - 2, pw - 40, rowH - 2);
       ctx.fillStyle = '#ffd98a';
-      ctx.fillRect(ox + 20, ry - 2, 3, rowH - 4);
+      ctx.fillRect(ox + 20, ry - 2, 3, rowH - 2);
     }
     const affordable = p.souls >= it.price && !it.owned;
     ctx.textAlign = 'left';
-    ctx.font = 'bold 16px "Microsoft YaHei", sans-serif';
+    ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
     ctx.fillStyle = it.owned ? 'rgba(185,175,155,0.6)' : (sel ? '#fff0d0' : '#d8cbb0');
-    ctx.fillText(it.name, ox + 36, ry + 18);
-    ctx.font = '12px "Microsoft YaHei", sans-serif';
+    ctx.fillText(it.name, ox + 36, ry + 14);
+    ctx.font = '11px "Microsoft YaHei", sans-serif';
     ctx.fillStyle = 'rgba(190,180,160,0.62)';
-    ctx.fillText(it.desc, ox + 36, ry + 36);
+    ctx.fillText(it.desc, ox + 36, ry + 27);
 
     ctx.textAlign = 'right';
     if (it.equipped) {
-      ctx.font = 'bold 14px "Microsoft YaHei", sans-serif';
+      ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
       ctx.fillStyle = '#9ad6b0';
-      ctx.fillText('已装备', ox + pw - 36, ry + 22);
+      ctx.fillText('已装备', ox + pw - 36, ry + 18);
     } else if (it.owned) {
-      ctx.font = '14px "Microsoft YaHei", sans-serif';
+      ctx.font = '13px "Microsoft YaHei", sans-serif';
       ctx.fillStyle = 'rgba(165,155,140,0.7)';
-      ctx.fillText('已拥有', ox + pw - 36, ry + 22);
+      ctx.fillText('已拥有', ox + pw - 36, ry + 18);
     } else {
-      ctx.font = 'bold 16px Georgia, serif';
+      ctx.font = 'bold 15px Georgia, serif';
       ctx.fillStyle = affordable ? '#9be7ff' : 'rgba(160,125,115,0.85)';
-      ctx.fillText(it.price + ' 魂', ox + pw - 36, ry + 22);
+      ctx.fillText(it.price + ' 魂', ox + pw - 36, ry + 18);
     }
   }
 
@@ -3279,7 +3652,7 @@ function mNote(freq, time, dur, type, vol, o) {
     node.connect(ws);
     node = ws;
   }
-  node.connect(music.master);
+  node.connect(music.bus || music.master);
   osc.start(time);
   osc.stop(time + dur + 0.1);
 }
@@ -3294,7 +3667,7 @@ function mKick(time, vol) {
   gn.gain.setValueAtTime(0.0001, time);
   gn.gain.linearRampToValueAtTime(vol, time + 0.006);
   gn.gain.exponentialRampToValueAtTime(0.0001, time + 0.34);
-  osc.connect(gn).connect(music.master);
+  osc.connect(gn).connect(music.bus || music.master);
   osc.start(time);
   osc.stop(time + 0.38);
 }
@@ -3309,7 +3682,7 @@ function mNoiseHit(time, vol, hp, dur) {
   const gn = actx.createGain();
   gn.gain.setValueAtTime(vol, time);
   gn.gain.exponentialRampToValueAtTime(0.0001, time + dur);
-  src.connect(f).connect(gn).connect(music.master);
+  src.connect(f).connect(gn).connect(music.bus || music.master);
   src.start(time);
   src.stop(time + dur + 0.05);
 }
@@ -3318,72 +3691,112 @@ const MUSIC_CHORDS = [
   { root: 73.42, pad: [146.83, 174.61, 220.00, 293.66] },  // Dm
   { root: 58.27, pad: [116.54, 146.83, 174.61, 233.08] },  // Bb
   { root: 87.31, pad: [87.31, 110.00, 130.81, 174.61] },   // F
-  { root: 65.41, pad: [130.81, 164.81, 196.00, 261.63] }   // C
+  { root: 65.41, pad: [130.81, 164.81, 196.00, 261.63] },  // C
+  { root: 73.42, pad: [146.83, 174.61, 220.00, 293.66] },  // Dm
+  { root: 98.00, pad: [98.00, 116.54, 146.83, 196.00] },   // Gm
+  { root: 55.00, pad: [110.00, 138.59, 164.81, 220.00] },  // A7
+  { root: 58.27, pad: [116.54, 146.83, 174.61, 233.08] },  // Bb
 ];
 
+// 八小节一句的旋律骨架
+const LEAD_EXPLORE = [293.66, 349.23, 392.00, 440.00, 392.00, 349.23, 261.63, 293.66];
+const LEAD_BOSS = [587.33, 523.25, 466.16, 440.00, 466.16, 523.25, 587.33, 622.25];
+
 function playStep(step, time, stepDur) {
-  const bar = Math.floor(step / 16) % 4;
+  const bar = Math.floor(step / 16) % 8;
   const ch = MUSIC_CHORDS[bar];
   const inBar = step % 16;
+  const odd = bar % 2 === 1;
 
   if (music.current === 'explore') {
-    // 铺底弦乐
     if (inBar === 0) {
       for (let i = 0; i < ch.pad.length; i++) {
-        mNote(ch.pad[i], time, stepDur * 16 * 1.05, 'sawtooth', 0.045,
-          { attack: 0.9, filter: 780, detune: (i - 1.5) * 6, filterTo: 520 });
+        const f = ch.pad[i];
+        mNote(f, time, stepDur * 16 * 1.06, 'sawtooth', 0.036,
+          { attack: 1.2, filter: 820, detune: -7, filterTo: 540 });
+        mNote(f * 1.004, time, stepDur * 16 * 1.06, 'sawtooth', 0.028,
+          { attack: 1.2, filter: 760, detune: 7, filterTo: 500 });
       }
-      mNote(ch.root, time, stepDur * 16 * 1.1, 'sine', 0.10, { attack: 0.5 });
+      mNote(ch.root, time, stepDur * 16 * 1.1, 'sine', 0.11, { attack: 0.35 });
+      mNote(ch.root * 2, time, stepDur * 16 * 1.1, 'triangle', 0.028, { attack: 0.8, filter: 420 });
+      mNote(ch.pad[2] * 2, time, stepDur * 16, 'sine', 0.016,
+        { attack: 1.6, vibrato: 4.5, vibratoDepth: 2 });
     }
-    // 竖琴琶音
+    const arp = [0, 1, 2, 3, 2, 1, 2, 3];
     if (inBar % 2 === 0) {
-      const idx = (inBar / 2) % ch.pad.length;
-      const f = ch.pad[idx] * 2;
-      mNote(f, time, 0.42, 'triangle', 0.055, { attack: 0.005 });
-      mNote(f * 2, time + 0.02, 0.26, 'sine', 0.022, { attack: 0.004 });
+      const f = ch.pad[arp[(inBar / 2) % 8]] * 2;
+      mNote(f, time, 0.52, 'triangle', 0.05, { attack: 0.004 });
+      mNote(f * 2, time + 0.016, 0.3, 'sine', 0.014, { attack: 0.003 });
     }
-    // 心跳鼓
-    if (inBar === 0 || inBar === 10) mKick(time, 0.16);
-    if (inBar === 8) mNoiseHit(time, 0.05, 900, 0.2);
-    // 远处钟声
-    if (inBar === 12 && bar % 2 === 1) {
-      mNote(ch.pad[3] * 4, time, 1.6, 'sine', 0.035, { attack: 0.02 });
+    if (inBar === 0 && !odd) {
+      const lead = LEAD_EXPLORE[bar];
+      mNote(lead, time + stepDur * 2, stepDur * 12, 'sine', 0.05,
+        { attack: 0.28, vibrato: 4.2, vibratoDepth: 2.5 });
+      mNote(lead * 2, time + stepDur * 2, stepDur * 7, 'triangle', 0.011, { attack: 0.3 });
+    }
+    if (inBar === 0) mKick(time, 0.15);
+    if (inBar === 10) mKick(time, 0.085);
+    if (inBar === 8) mNoiseHit(time, 0.042, 900, 0.22);
+    if (inBar === 14 && odd) mNoiseHit(time, 0.018, 4200, 0.1);
+    if (inBar === 12 && bar % 4 === 3) {
+      mNote(ch.pad[3] * 4, time, 2.0, 'sine', 0.028, { attack: 0.02 });
+      mNote(ch.pad[3] * 4.03, time, 2.0, 'sine', 0.018, { attack: 0.02 });
     }
   } else {
-    // Boss 战：快速、压迫
     if (inBar === 0) {
-      // 铜管和弦
       for (let i = 0; i < ch.pad.length; i++) {
-        mNote(ch.pad[i] * 0.5, time, stepDur * 15, 'sawtooth', 0.05,
-          { attack: 0.05, filter: 1600, dist: 4 });
+        mNote(ch.pad[i] * 0.5, time, stepDur * 15, 'sawtooth', 0.043,
+          { attack: 0.04, filter: 1700, dist: 4 });
+        mNote(ch.pad[i] * 0.5 * 1.005, time, stepDur * 15, 'sawtooth', 0.028,
+          { attack: 0.05, filter: 1500, dist: 3 });
       }
-      mNote(ch.root * 0.5, time, stepDur * 15, 'square', 0.09, { attack: 0.02, filter: 520 });
+      mNote(ch.root * 0.5, time, stepDur * 15, 'square', 0.08, { attack: 0.015, filter: 560 });
+      mNote(ch.root, time, stepDur * 15, 'triangle', 0.048, { attack: 0.02, filter: 300 });
     }
-    // 失真节奏低音（每 8 分）
     if (inBar % 2 === 0) {
-      mNote(ch.root * 0.5, time, stepDur * 1.6, 'sawtooth', 0.11,
-        { attack: 0.004, filter: 420, filterTo: 190, dist: 12 });
+      const oct = (inBar % 8 === 0) ? 0.5 : 1;
+      mNote(ch.root * oct, time, stepDur * 1.5, 'sawtooth', 0.10,
+        { attack: 0.003, filter: 460, filterTo: 200, dist: 12 });
     }
-    // 定音鼓
     if (inBar % 4 === 0) mKick(time, 0.30);
     if (inBar === 6 || inBar === 14) mKick(time, 0.20);
-    // 军鼓
-    if (inBar === 4 || inBar === 12) mNoiseHit(time, 0.10, 1400, 0.18);
-    // 踩镲
-    if (inBar % 2 === 1) mNoiseHit(time, 0.020, 8000, 0.05);
-    // 主旋律
-    if (inBar === 0 || inBar === 8) {
-      const lead = [ch.pad[2] * 2, ch.pad[3] * 2, ch.pad[1] * 2, ch.pad[2] * 2][
-        (Math.floor(step / 16) + (inBar === 8 ? 1 : 0)) % 4
-      ];
-      mNote(lead, time, stepDur * 7, 'square', 0.045,
-        { attack: 0.02, vibrato: 5.5, vibratoDepth: 4, filter: 2600 });
+    if (inBar === 4 || inBar === 12) {
+      mNoiseHit(time, 0.10, 1500, 0.18);
+      mNoiseHit(time + stepDur * 0.25, 0.048, 1900, 0.1);
     }
-    // 二阶段高音刺
-    if (boss && boss.phase === 2 && inBar === 15) {
-      mNote(ch.pad[0] * 4, time, stepDur * 2, 'sawtooth', 0.03, { attack: 0.005, dist: 6 });
+    if (inBar === 15 && odd) {
+      for (let k = 0; k < 4; k++) {
+        mNoiseHit(time + stepDur * k * 0.25, 0.04 + k * 0.012, 2200, 0.08);
+      }
+    }
+    if (inBar % 2 === 1) mNoiseHit(time, 0.017, 8200, 0.05);
+    if (inBar % 4 === 0) {
+      const lead = LEAD_BOSS[bar];
+      mNote(lead, time, stepDur * 3.4, 'square', 0.04,
+        { attack: 0.012, vibrato: 6, vibratoDepth: 4, filter: 2800 });
+      mNote(lead * 1.5, time + stepDur * 2, stepDur * 2, 'sawtooth', 0.018,
+        { attack: 0.01, filter: 2200 });
+    }
+    if (boss && boss.phase === 2) {
+      if (inBar === 15) mNote(ch.pad[0] * 4.2, time, stepDur * 2, 'sawtooth', 0.026, { attack: 0.004, dist: 6 });
+      if (inBar === 7) mNote(ch.pad[1] * 3.6, time, stepDur * 1.2, 'square', 0.018, { attack: 0.004 });
     }
   }
+}
+
+// 程序化混响脉冲：噪声 × 指数衰减
+function makeReverbImpulse(seconds, decay) {
+  const rate = actx.sampleRate;
+  const len = Math.max(1, Math.floor(rate * seconds));
+  const buf = actx.createBuffer(2, len, rate);
+  for (let c = 0; c < 2; c++) {
+    const d = buf.getChannelData(c);
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, decay);
+    }
+  }
+  return buf;
 }
 
 function startMusic() {
@@ -3398,6 +3811,33 @@ function startMusic() {
   master.gain.value = music.vol;
   master.connect(comp).connect(actx.destination);
   music.master = master;
+
+  // 混响 + 延迟：给曲子一个厅堂空间，避免干瘪
+  const bus = actx.createGain();
+  bus.gain.value = 1;
+  const dry = actx.createGain();
+  dry.gain.value = 0.82;
+  bus.connect(dry).connect(master);
+  try {
+    const conv = actx.createConvolver();
+    conv.buffer = makeReverbImpulse(2.6, 2.4);
+    const wet = actx.createGain();
+    wet.gain.value = 0.34;
+    bus.connect(conv).connect(wet).connect(master);
+  } catch (e) {}
+  try {
+    const dl = actx.createDelay(0.8);
+    dl.delayTime.value = 0.36;
+    const fb = actx.createGain();
+    fb.gain.value = 0.26;
+    const dw = actx.createGain();
+    dw.gain.value = 0.15;
+    bus.connect(dl);
+    dl.connect(fb).connect(dl);
+    dl.connect(dw).connect(master);
+  } catch (e) {}
+  music.bus = bus;
+
   music.started = true;
   music.step = 0;
   music.nextTime = actx.currentTime + 0.15;
@@ -3423,7 +3863,7 @@ function scheduleMusic() {
   let guard = 0;
   while (music.nextTime < actx.currentTime + 0.4 && guard < 64) {
     playStep(music.step, music.nextTime, stepDur);
-    music.step = (music.step + 1) % 64;
+    music.step = (music.step + 1) % 128;
     music.nextTime += stepDur;
     guard++;
   }
@@ -3545,6 +3985,7 @@ function loop(now) {
 
 // ---------------- 启动 ----------------
 initGraphics();
+loadArt();
 resetAll();
 requestAnimationFrame(loop);
 

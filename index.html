@@ -1462,7 +1462,12 @@ function updatePlayer(dt) {
       p.attackHitDone = true;
       playerAttackHit();
     }
-    if ((pressed['j'] || pressed['mouse']) && t >= c.hitAt) p.comboQueued = true;
+    // 攻击中允许小幅走位（前半段），保持输出时还能微调站位
+    if (il > 0 && t < c.hitAt + 0.12) {
+      p.x += ix * p.speed * 0.34 * dt;
+      p.y += iy * p.speed * 0.34 * dt;
+    }
+    if ((pressed['j'] || pressed['mouse'] || keys['j']) && t >= c.hitAt) p.comboQueued = true;
     if ((pressed['k'] || pressed[' ']) && t > 0.1) {
       if (p.combo === 0 && p.stamina >= SPECIALS.dash.stamina && t >= c.hitAt) {
         startDashSlash(p);
@@ -1735,6 +1740,22 @@ function updateEnemies(dt) {
       }
       resolveObstacles(e);
       continue;
+    }
+
+    // 脱战：玩家跑得够远、或自己离老巢太远，追一会儿就放弃
+    if (e.aggro) {
+      const farD = Math.hypot(e.x - e.homeX, e.y - e.homeY);
+      if (d > 460 || farD > 460) {
+        e.leashT = (e.leashT || 0) + dt;
+        if (e.leashT > 1.6) {
+          e.aggro = false;
+          e.leashT = 0;
+          e.state = 'idle';
+          e.stateT = 0;
+        }
+      } else {
+        e.leashT = 0;
+      }
     }
 
     // 未激活：在出生点附近游荡
@@ -3748,6 +3769,51 @@ function drawUI() {
   drawGearBtn();
 }
 
+function drawMinimap() {
+  if (game.state !== 'playing' && game.state !== 'paused') return;
+  const mw = IS_TOUCH ? 108 : 150;
+  const mh = Math.round(mw * WORLD.h / WORLD.w);
+  const mx = 14, my = 14;
+  const sx = mw / WORLD.w, sy = mh / WORLD.h;
+  ctx.save();
+  ctx.fillStyle = 'rgba(14,20,16,0.74)';
+  ctx.fillRect(mx, my, mw, mh);
+  ctx.strokeStyle = 'rgba(160,145,110,0.5)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(mx + 0.5, my + 0.5, mw - 1, mh - 1);
+  ctx.fillStyle = 'rgba(140,152,168,0.6)';
+  for (const o of obstacles) ctx.fillRect(mx + o.x * sx - 1.5, my + o.y * sy - 1.5, 3, 3);
+  ctx.fillStyle = '#ffa14a';
+  ctx.fillRect(mx + bonfire.x * sx - 2.5, my + bonfire.y * sy - 2.5, 5, 5);
+  for (const e of enemies) {
+    if (e.dead) continue;
+    ctx.fillStyle = e.aggro ? '#ff5f5f' : 'rgba(210,130,130,0.55)';
+    ctx.fillRect(mx + e.x * sx - 1.5, my + e.y * sy - 1.5, 3, 3);
+  }
+  if (boss && !boss.dead && boss.aggro) {
+    const bx2 = mx + boss.x * sx, by2 = my + boss.y * sy;
+    ctx.fillStyle = '#ff2f2f';
+    ctx.fillRect(bx2 - 2, by2 - 2, 4, 4);
+    ctx.strokeStyle = 'rgba(255,90,90,0.75)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(bx2, by2, 5 + Math.sin(game.time * 4) * 1.6, 0, TAU);
+    ctx.stroke();
+  }
+  const ppx = mx + player.x * sx, ppy = my + player.y * sy;
+  ctx.fillStyle = '#eef6ff';
+  ctx.beginPath();
+  ctx.arc(ppx, ppy, 2.4, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(140,200,255,0.9)';
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.moveTo(ppx, ppy);
+  ctx.lineTo(ppx + Math.cos(player.facing) * 7, ppy + Math.sin(player.facing) * 7);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawGearBtn() {
   const r = IS_TOUCH ? 20 : 16;
   const bx = W - r - 16;
@@ -4382,6 +4448,7 @@ function render() {
   drawFloaters(shakeX, shakeY);
 
   drawVignette();
+  drawMinimap();
   drawUI();
   if (IS_TOUCH) drawTouchUI();
   drawOverlay();

@@ -188,7 +188,14 @@ canvas.addEventListener('mousedown', (e) => {
           st.sel = h.i;
           if (h.i < ACTIONS.length) st.waiting = ACTIONS[h.i].id;
           else if (h.i === ACTIONS.length) resetBinds();
-          else if (h.i === ACTIONS.length + 1) cycleLayout();
+          else if (h.i === ACTIONS.length + 1) {
+            const di = DIFF_ORDER.indexOf(diffKey);
+            diffKey = DIFF_ORDER[(di + 1) % DIFF_ORDER.length];
+            resetEnemies();
+            boss = makeBoss();
+            st.msg = '难度：' + D().name + '（' + D().tag + '）· 敌人已按新数值重生';
+            st.msgT = 3;
+          } else if (h.i === ACTIONS.length + 2) cycleLayout();
           else closeSettings();
           return;
         }
@@ -504,8 +511,8 @@ function makeEnemy(x, y, type) {
   return {
     x, y, type,
     r: t.r,
-    maxHp: t.maxHp,
-    hp: t.maxHp,
+    maxHp: Math.max(10, Math.round(t.maxHp * D().enemyHp)),
+    hp: Math.max(10, Math.round(t.maxHp * D().enemyHp)),
     dmg: t.dmg,
     speed: t.speed,
     atkRange: t.atkRange,
@@ -540,8 +547,8 @@ function makeBoss() {
     x: 1980,
     y: 420,
     r: 26,
-    maxHp: 480,
-    hp: 480,
+    maxHp: Math.round(480 * D().bossHp),
+    hp: Math.round(480 * D().bossHp),
     dmg: 28,
     speed: 40,
     state: 'dormant',
@@ -1063,6 +1070,35 @@ function playerSpecialHit(kind) {
   }
 }
 
+// ---------------- 难度分级 ----------------
+// 三档用同一套关卡与敌人配置，只调数值，方便新手入门、老手加码
+const DIFFS = {
+  easy: {
+    key: 'easy', name: '拾薪者', tag: '轻松',
+    lines: ['敌人伤害 ×0.55', '敌人血量 ×0.80', 'Boss 血量 ×0.78 / 伤害 ×0.60', '耐力回复 ×1.35', '格挡完美窗口 0.30 秒', '敌人视野 270（更晚发现你）', '死亡不掉魂'],
+    note: '先摸清地图、练连招和格挡。',
+    enemyDmg: 0.55, enemyHp: 0.8, bossHp: 0.78, bossDmg: 0.6,
+    staminaRegen: 1.35, parry: 0.3, aggro: 270, keepSouls: true,
+  },
+  normal: {
+    key: 'normal', name: '灰烬行者', tag: '标准',
+    lines: ['敌人伤害 ×1.00', '敌人血量 ×1.00', 'Boss 血量 ×1.00 / 伤害 ×1.00', '耐力回复 ×1.00', '格挡完美窗口 0.20 秒', '敌人视野 340', '死亡掉魂（在原地留血迹）'],
+    note: '原本的数值，该挨的打一下就疼。',
+    enemyDmg: 1, enemyHp: 1, bossHp: 1, bossDmg: 1,
+    staminaRegen: 1, parry: 0.2, aggro: 340, keepSouls: false,
+  },
+  hard: {
+    key: 'hard', name: '无火之人', tag: '硬核',
+    lines: ['敌人伤害 ×1.35', '敌人血量 ×1.25', 'Boss 血量 ×1.30 / 伤害 ×1.25', '耐力回复 ×0.85', '格挡完美窗口 0.14 秒', '敌人视野 430（很远就扑上来）', '死亡掉魂'],
+    note: '数值最凶，完美格挡要靠肌肉记忆。',
+    enemyDmg: 1.35, enemyHp: 1.25, bossHp: 1.3, bossDmg: 1.25,
+    staminaRegen: 0.85, parry: 0.14, aggro: 430, keepSouls: false,
+  },
+};
+const DIFF_ORDER = ['easy', 'normal', 'hard'];
+let diffKey = 'normal';
+function D() { return DIFFS[diffKey] || DIFFS.normal; }
+
 // 三段连招：轻斩 → 反手斩 → 重劈
 const COMBO = [
   { dmg: 15, reach: 42, hitR: 30, hitAt: 0.09, total: 0.34, stamina: 16, shake: 6, kb: 10, arc: 1.9, spin: 1 },
@@ -1209,6 +1245,7 @@ function tryRiposte(src) {
 function damagePlayer(dmg, sx, sy, src) {
   const p = player;
   if (p.dead || p.invuln > 0) return 'none';
+  dmg = Math.max(1, Math.round(dmg * D().enemyDmg));
 
   // 举盾格挡：攻击来自正面才有效
   if (p.state === 'block') {
@@ -1316,7 +1353,7 @@ function respawnPlayer() {
   p.state = 'idle';
   p.stateT = 0;
   p.invuln = 1.4;
-  p.souls = 0;
+  if (!D().keepSouls) p.souls = 0;   // 拾薪者难度不掉魂
   p.soul = 0;
   p.flash = 0;
   p.staminaDelay = 0;
@@ -1402,7 +1439,7 @@ function updatePlayer(dt) {
 
   // 耐力恢复
   if (p.staminaDelay <= 0 && p.state !== 'roll' && p.state !== 'attack' && p.state !== 'block') {
-    p.stamina = Math.min(p.maxStamina, p.stamina + 32 * dt);
+    p.stamina = Math.min(p.maxStamina, p.stamina + 32 * D().staminaRegen * dt);
   }
 
   // 状态机
@@ -1410,7 +1447,7 @@ function updatePlayer(dt) {
     if ((keys['l'] || keys['mouse2'] || keys['block']) && p.stamina > 8) {
       p.state = 'block';
       p.stateT = 0;
-      p.parryWin = 0.2;   // 起手 0.2 秒内挡到 = 完美格挡
+      p.parryWin = D().parry;   // 起手窗口内挡到 = 完美格挡（难度可调）
       sfx.block();
     } else if ((pressed['k'] || pressed[' ']) && p.stamina >= 25) {
       startRoll(p, ix, iy);
@@ -1623,13 +1660,20 @@ function updateSettings(dt) {
   if (!st) return;
   if (st.msg && st.msgT > 0) st.msgT -= dt;
   if (st.waiting) return;
-  const n = ACTIONS.length + 3;
+  const n = ACTIONS.length + 4;
   if (pressed['w'] || pressed['arrowup']) { st.sel = (st.sel + n - 1) % n; st.msg = ''; }
   if (pressed['s'] || pressed['arrowdown']) { st.sel = (st.sel + 1) % n; st.msg = ''; }
   if (pressed['j'] || pressed['enter'] || pressed[' ']) {
     if (st.sel < ACTIONS.length) st.waiting = ACTIONS[st.sel].id;
     else if (st.sel === ACTIONS.length) resetBinds();
-    else if (st.sel === ACTIONS.length + 1) cycleLayout();
+    else if (st.sel === ACTIONS.length + 1) {
+      const i = DIFF_ORDER.indexOf(diffKey);
+      diffKey = DIFF_ORDER[(i + 1) % DIFF_ORDER.length];
+      resetEnemies();
+      boss = makeBoss();
+      st.msg = '难度：' + D().name + '（' + D().tag + '）· 敌人已按新数值重生';
+      st.msgT = 3;
+    } else if (st.sel === ACTIONS.length + 2) cycleLayout();
     else closeSettings();
   }
   if (pressed['tab']) { st.sel = 0; }
@@ -1770,7 +1814,7 @@ function updateEnemies(dt) {
       e.facing = e.wanderDir;
       e.x += Math.cos(e.wanderDir) * 26 * dt;
       e.y += Math.sin(e.wanderDir) * 26 * dt;
-      if (d < 340 && !player.dead) {
+      if (d < D().aggro && !player.dead) {
         e.aggro = true;
         e.state = 'chase';
         e.stateT = 0;
@@ -2079,6 +2123,12 @@ function update(dt) {
   }
   if (game.settings) {
     updateSettings(dt);
+    return;
+  }
+
+  if (game.state === 'menu') {
+    updateMenu(dt);
+    updateCamera(dt);
     return;
   }
 
@@ -3555,6 +3605,8 @@ function drawVignette() {
 }
 
 function drawUI() {
+  const hEl = document.getElementById('hint');
+  if (hEl && hEl.style.display === 'none') hEl.style.display = '';
   const p = player;
   const barW = Math.min(260, W * 0.3);
   const stamW = Math.min(235, W * 0.26);
@@ -3769,8 +3821,106 @@ function drawUI() {
   drawGearBtn();
 }
 
-function drawMinimap() {
-  if (game.state !== 'playing' && game.state !== 'paused') return;
+// ---------------- 难度菜单 ----------------
+function updateMenu(dt) {
+  if (game.menuSel === undefined) game.menuSel = 1;
+  const n = DIFF_ORDER.length;
+  if (pressed['w'] || pressed['arrowup']) game.menuSel = (game.menuSel + n - 1) % n;
+  if (pressed['s'] || pressed['arrowdown']) game.menuSel = (game.menuSel + 1) % n;
+  if (pressed['1']) game.menuSel = 0;
+  if (pressed['2']) game.menuSel = 1;
+  if (pressed['3']) game.menuSel = 2;
+  // 鼠标/触屏点卡片
+  const hit = game.menuHit;
+  if (hit && (pressed['mouse'] || pressed['tap'])) {
+    for (let i = 0; i < hit.length; i++) {
+      const h = hit[i];
+      if (pressed.mx >= h.x && pressed.mx <= h.x + h.w && pressed.my >= h.y && pressed.my <= h.y + h.h) {
+        game.menuSel = i;
+        break;
+      }
+    }
+  }
+  if (pressed['j'] || pressed['enter'] || pressed[' ']) {
+    diffKey = DIFF_ORDER[game.menuSel] || 'normal';
+    resetEnemies();
+    boss = makeBoss();
+    game.state = 'playing';
+    game.toast = { text: '难度 · ' + D().name + '（' + D().tag + '）', t: 3.2 };
+    if (sfx.ui) sfx.ui();
+  }
+}
+
+function drawMenu() {
+  const t = D();
+  const hEl = document.getElementById('hint');
+  if (hEl) hEl.style.display = 'none';
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,8,7,0.72)';
+  ctx.fillRect(0, 0, W, H);
+
+  const cx = W / 2;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#e8e2d4';
+  ctx.font = 'bold ' + Math.round(W * 0.038) + 'px "Noto Serif SC", "Microsoft YaHei", serif';
+  ctx.fillText('灰 烬 回 响', cx, H * 0.16);
+  ctx.font = Math.round(W * 0.013) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = 'rgba(200,190,170,0.72)';
+  ctx.fillText('ASHEN ECHO · 选择你的难度', cx, H * 0.16 + Math.round(W * 0.036));
+
+  const cardW = Math.min(330, (W - 120) / 3);
+  const gap = Math.min(26, W * 0.02);
+  const totalW = cardW * 3 + gap * 2;
+  const x0 = (W - totalW) / 2;
+  const lineH = Math.round(cardW * 0.052);
+  const cardH = Math.min(360, Math.round(cardW * 0.28) + DIFFS[DIFF_ORDER[0]].lines.length * lineH + 56);
+  const cy0 = H * 0.28;
+  game.menuHit = [];
+
+  for (let i = 0; i < 3; i++) {
+    const d = DIFFS[DIFF_ORDER[i]];
+    const x = x0 + i * (cardW + gap);
+    const sel = (game.menuSel | 0) === i;
+    game.menuHit.push({ x, y: cy0, w: cardW, h: cardH });
+
+    ctx.fillStyle = sel ? 'rgba(46,52,44,0.96)' : 'rgba(20,24,20,0.9)';
+    ctx.fillRect(x, cy0, cardW, cardH);
+    ctx.strokeStyle = sel ? 'rgba(232,205,134,0.95)' : 'rgba(120,112,96,0.45)';
+    ctx.lineWidth = sel ? 2 : 1;
+    ctx.strokeRect(x + 0.5, cy0 + 0.5, cardW - 1, cardH - 1);
+
+    const pad = 18;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = sel ? '#ffe9a0' : '#cfc6b4';
+    ctx.font = 'bold ' + Math.round(cardW * 0.075) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(d.name, x + pad, cy0 + pad + cardW * 0.06);
+    ctx.font = Math.round(cardW * 0.045) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = sel ? 'rgba(255,233,160,0.72)' : 'rgba(190,180,160,0.6)';
+    ctx.fillText(d.tag, x + pad, cy0 + pad + cardW * 0.12);
+
+    ctx.font = Math.round(cardW * 0.042) + 'px "Microsoft YaHei", sans-serif';
+    let ly = cy0 + pad + cardW * 0.18;
+    for (const line of d.lines) {
+      ctx.fillStyle = 'rgba(215,208,192,0.86)';
+      ctx.fillText('· ' + line, x + pad, ly);
+      ly += Math.round(cardW * 0.052);
+    }
+    ctx.fillStyle = sel ? 'rgba(255,233,160,0.6)' : 'rgba(160,152,138,0.55)';
+    ctx.font = 'italic ' + Math.round(cardW * 0.04) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(d.note, x + pad, cy0 + cardH - pad);
+  }
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(210,200,180,0.8)';
+  ctx.font = Math.round(W * 0.0135) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText(IS_TOUCH ? '点一张卡片开始（也可以左右滑动后再点）' : 'W/S 或 ↑↓ 选择 · J 或回车开始 · 也可直接按 1 / 2 / 3', cx, cy0 + cardH + Math.round(H * 0.09));
+  ctx.fillStyle = 'rgba(150,142,128,0.6)';
+  ctx.font = Math.round(W * 0.0115) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('难度只调数值，不换关卡和敌人配置；中途可以在 Esc 设置里改', cx, cy0 + cardH + Math.round(H * 0.13));
+  ctx.restore();
+}
+
+function drawMinimap() {  if (game.state !== 'playing' && game.state !== 'paused') return;
   const mw = IS_TOUCH ? 108 : 150;
   const mh = Math.round(mw * WORLD.h / WORLD.w);
   const mx = 14, my = 14;
@@ -3839,7 +3989,7 @@ function drawGearBtn() {
 function drawSettings() {
   const st = game.settings;
   const pw = Math.min(560, W - 60);
-  const rows = ACTIONS.length + 3;
+  const rows = ACTIONS.length + 4;
   const ph = Math.min(H - 70, rows * 34 + 150);
   const ox = (W - pw) / 2;
   const oy = (H - ph) / 2;
@@ -3890,6 +4040,16 @@ function drawSettings() {
       ctx.fillStyle = sel ? '#ffffff' : 'rgba(220,230,242,0.9)';
       ctx.fillText('恢复默认键位', ox + 30, ry + 14);
     } else if (i === ACTIONS.length + 1) {
+      const cur = DIFFS[diffKey] || DIFFS.normal;
+      ctx.font = '14px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = sel ? '#ffffff' : 'rgba(220,230,242,0.9)';
+      ctx.fillText('难度', ox + 30, ry + 14);
+      ctx.textAlign = 'right';
+      ctx.font = '13px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = cur.key === 'hard' ? '#ff9a8a' : (cur.key === 'easy' ? '#9fe0a8' : 'rgba(150,205,250,0.95)');
+      ctx.fillText(cur.name + ' · ' + cur.tag, ox + pw - 30, ry + 14);
+      ctx.textAlign = 'left';
+    } else if (i === ACTIONS.length + 2) {
       const cur = MOBILE_PRESETS.find(p => p.id === mobileLayout) || MOBILE_PRESETS[0];
       ctx.font = '14px "Microsoft YaHei", sans-serif';
       ctx.fillStyle = sel ? '#ffffff' : 'rgba(220,230,242,0.9)';
@@ -4448,10 +4608,14 @@ function render() {
   drawFloaters(shakeX, shakeY);
 
   drawVignette();
-  drawMinimap();
-  drawUI();
-  if (IS_TOUCH) drawTouchUI();
-  drawOverlay();
+  if (game.state === 'menu') {
+    drawMenu();
+  } else {
+    drawMinimap();
+    drawUI();
+    if (IS_TOUCH) drawTouchUI();
+    drawOverlay();
+  }
 }
 
 // ---------------- 主循环 ----------------
@@ -4479,6 +4643,8 @@ function loop(now) {
 initGraphics();
 loadArt();
 resetAll();
+game.state = 'menu';
+game.menuSel = 1;
 requestAnimationFrame(loop);
 
 </script>

@@ -535,6 +535,8 @@ function makePlayer() {
     ownedWeapons: ['iron'],
     armor: null,
     ownedArmors: [],
+    boots: 'none',
+    ownedBoots: ['none'],
     flasks: 3,
     maxFlasks: 3,
     soul: 0,
@@ -1073,9 +1075,15 @@ const WEAPONS = {
   tower: { kind: 'shield', name: '守墓大盾', dmg: 0.55, reach: 0.85, spd: 0.92, price: 240, tint: '#7d8a99', desc: '举盾减伤翻倍，护甲 +6。' },
 };
 const ARMORS = {
-  cloak: { name: '旅者斗篷', armor: 4, price: 140, desc: '护甲 +4，聊胜于无。' },
-  mail:  { name: '锁子甲',   armor: 9, price: 330, desc: '护甲 +9，正面挨刀没那么疼。' },
-  plate: { name: '守墓板甲', armor: 15, price: 580, desc: '护甲 +15，沉得迈不开腿。' },
+  cloak: { name: '旅者斗篷', armor: 4, price: 140, spd: 0.98, desc: '护甲 +4 · 移速 -2%' },
+  mail:  { name: '锁子甲',   armor: 9, price: 330, spd: 0.92, desc: '护甲 +9 · 移速 -8%' },
+  plate: { name: '守墓板甲', armor: 15, price: 580, spd: 0.80, desc: '护甲 +15 · 移速 -20%，沉得迈不开腿' },
+};
+const BOOTS = {
+  none:    { name: '赤足',     armor: 0, price: 0, spd: 1.00, desc: '没有任何加成' },
+  leather: { name: '旅者皮靴', armor: 0, price: 160, spd: 1.08, desc: '移速 +8%' },
+  swift:   { name: '疾行靴',   armor: 0, price: 380, spd: 1.16, desc: '移速 +16%，翻滚也更远' },
+  iron:    { name: '沉铁靴',   armor: 5, price: 300, spd: 0.96, desc: '护甲 +5 · 移速 -4%' },
 };
 const SHOP_ITEMS = [
   { id: 'flask', name: '原素瓶 ×1', price: 90, desc: '携带上限 +1，并补满' },
@@ -1088,9 +1096,17 @@ const vendor = { x: 724, y: 1266, r: 12, bob: 0 };
 function wpn() { return WEAPONS[player && player.weapon] || WEAPONS.iron; }
 function wpnKind() { return wpn().kind || 'sword'; }
 function armorOf(id) { return ARMORS[id] || null; }
+function bootsOf(id) { return BOOTS[id] || BOOTS.none; }
+// 重量换防护：护甲越重越慢，鞋子调节速度（也补护甲）
+function speedMul() {
+  const a = armorOf(player && player.armor);
+  const b = bootsOf(player && player.boots);
+  return (a ? (a.spd || 1) : 1) * (b ? (b.spd || 1) : 1);
+}
 function armorValue() {
   const a = armorOf(player && player.armor);
-  return (a ? a.armor : 0) + (wpnKind() === 'shield' ? 6 : 0);
+  const b = bootsOf(player && player.boots);
+  return (a ? a.armor : 0) + (b ? (b.armor || 0) : 0) + (wpnKind() === 'shield' ? 6 : 0);
 }
 function atkDmg(c) { return Math.round(c.dmg * wpn().dmg); }
 function atkReach(c) { return c.reach * wpn().reach; }
@@ -1124,6 +1140,20 @@ function shopList() {
       armor: id,
       owned: (player.ownedArmors || []).indexOf(id) >= 0,
       equipped: player.armor === id,
+    });
+  }
+  for (const id in BOOTS) {
+    const b = BOOTS[id];
+    if (!b.price) continue;
+    list.push({
+      id: 'b:' + id,
+      name: b.name,
+      price: b.price,
+      desc: b.desc,
+      kind: 'boots',
+      boots: id,
+      owned: (player.ownedBoots || []).indexOf(id) >= 0,
+      equipped: player.boots === id,
     });
   }
   return list;
@@ -1592,8 +1622,9 @@ function updatePlayer(dt) {
       startAttack(p);
     } else if (il > 0) {
       p.facing = Math.atan2(iy, ix);
-      p.x += ix * p.speed * dt;
-      p.y += iy * p.speed * dt;
+      const sp = p.speed * speedMul();
+      p.x += ix * sp * dt;
+      p.y += iy * sp * dt;
       p.state = 'walk';
       p.walkPhase += dt * 10;
       p.stepT = (p.stepT || 0) - dt;
@@ -1618,8 +1649,9 @@ function updatePlayer(dt) {
       game.toast = { text: '耐力耗尽 · 破防', t: 1.0 };
     } else {
       if (il > 0) {
-        p.x += ix * p.speed * 0.5 * dt;
-        p.y += iy * p.speed * 0.5 * dt;
+        const spb = p.speed * speedMul();
+        p.x += ix * spb * 0.5 * dt;
+        p.y += iy * spb * 0.5 * dt;
         p.walkPhase += dt * 6;
         p.facing = angleLerp(p.facing, Math.atan2(iy, ix), Math.min(1, 9 * dt));
       } else if (lockTarget && !lockTarget.dead) {
@@ -1638,8 +1670,9 @@ function updatePlayer(dt) {
     }
     // 攻击中允许小幅走位（前半段），保持输出时还能微调站位
     if (il > 0 && t < c.hitAt + 0.12) {
-      p.x += ix * p.speed * 0.34 * dt;
-      p.y += iy * p.speed * 0.34 * dt;
+      const spa = p.speed * speedMul();
+      p.x += ix * spa * 0.34 * dt;
+      p.y += iy * spa * 0.34 * dt;
     }
     // 输入缓冲：按一下就算数，不用卡帧数（K 优先于 J；手机长按仍可连段）
     if (pressed['j'] || pressed['mouse'] || (IS_TOUCH && keys['j'])) p.jBuf = 0.3;
@@ -1831,7 +1864,11 @@ function buyItem(it) {
       sfx.bonfire();
     } else if (it.kind === 'armor') {
       p.armor = it.armor;
-      game.shopMsg = '穿上 ' + it.name + '（护甲 ' + armorValue() + '）';
+      game.shopMsg = '穿上 ' + it.name + '（护甲 ' + armorValue() + ' · 移速 ' + Math.round(speedMul() * 100) + '%）';
+      sfx.bonfire();
+    } else if (it.kind === 'boots') {
+      p.boots = it.boots;
+      game.shopMsg = '换上 ' + it.name + '（移速 ' + Math.round(speedMul() * 100) + '%）';
       sfx.bonfire();
     } else {
       game.shopMsg = '你已经有了';
@@ -1853,7 +1890,12 @@ function buyItem(it) {
     p.ownedArmors = p.ownedArmors || [];
     p.ownedArmors.push(it.armor);
     p.armor = it.armor;
-    game.shopMsg = '穿上 ' + it.name + '（护甲 ' + armorValue() + '）';
+    game.shopMsg = '穿上 ' + it.name + '（护甲 ' + armorValue() + ' · 移速 ' + Math.round(speedMul() * 100) + '%）';
+  } else if (it.kind === 'boots') {
+    p.ownedBoots = p.ownedBoots || ['none'];
+    p.ownedBoots.push(it.boots);
+    p.boots = it.boots;
+    game.shopMsg = '换上 ' + it.name + '（移速 ' + Math.round(speedMul() * 100) + '%）';
   } else if (it.id === 'flask') {
     p.maxFlasks++;
     p.flasks = p.maxFlasks;
@@ -4007,7 +4049,8 @@ function drawUI() {
   ctx.fillText(wpn().name, x + stamW + 8, stamY + 30);
   ctx.font = '12px "Microsoft YaHei", sans-serif';
   ctx.fillStyle = av > 0 ? 'rgba(150,205,250,0.9)' : 'rgba(150,160,170,0.5)';
-  ctx.fillText('护甲 ' + av, x + stamW + 8, stamY + 46);
+  const sm = Math.round(speedMul() * 100);
+  ctx.fillText('护甲 ' + av + ' · 移速 ' + sm + '%', x + stamW + 8, stamY + 46);
 
   // 连招提示：命中时在画面中上方弹出
   if (game.comboHud && game.comboHud.t > 0) {
@@ -4382,7 +4425,7 @@ function drawShop() {
   const p = player;
   const list = shopList();
   const pw = Math.min(720, W - 120);
-  const ph = Math.min(H - 70, list.length * 33 + 148);
+  const ph = Math.min(H - 34, list.length * 33 + 148);
   const ox = (W - pw) / 2;
   const oy = (H - ph) / 2;
 

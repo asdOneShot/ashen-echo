@@ -890,7 +890,7 @@ function fireSpell(p) {
     vx: Math.cos(p.facing) * speed,
     vy: Math.sin(p.facing) * speed,
     r: 9,
-    dmg: 26,
+    dmg: 30,
     life: 1.0,
     maxLife: 1.0,
     hitList: [],
@@ -913,7 +913,7 @@ function updateProjectiles(dt) {
       if (e.dead || s.hitList.indexOf(e) >= 0) continue;
       if (Math.hypot(e.x - s.x, e.y - s.y) < e.r + s.r) {
         s.hitList.push(e);
-        damageEnemy(e, s.dmg, s.ang);
+        damageEnemy(e, s.dmg, s.ang, true, true);
         addEffect(makeShockwave(s.x, s.y, '#9be7ff'));
         game.hitStop = Math.max(game.hitStop, 0.045);
         game.shake = Math.max(game.shake, 6);
@@ -1210,7 +1210,7 @@ function playerAttackHit() {
   }
 }
 
-function damageEnemy(e, dmg, dir, byPlayer) {
+function damageEnemy(e, dmg, dir, byPlayer, pierce) {
   if (e.dead) return;
   if (byPlayer === undefined) byPlayer = true;
   // 术士的护盾：减伤一半
@@ -1218,16 +1218,21 @@ function damageEnemy(e, dmg, dir, byPlayer) {
     dmg = Math.max(1, Math.round(dmg * 0.5));
     if (byPlayer) addFloater(e.x, e.y - e.r - 10, '护盾', '#b8a6ff');
   }
-  // 盾兵：正面格挡，重劈可破防
+  // 盾兵：正面格挡；重劈或法术可以直接破盾
   if (e.shield && e.guardT <= 0) {
     const front = Math.abs(angleDiff(dir, e.facing + Math.PI)) < 1.15;
     if (front) {
-      if (dmg >= 28) {
+      if (dmg >= 28 || pierce) {
         e.guardT = 1.6;
-        addFloater(e.x, e.y - e.r - 8, '破防', '#ffd89a');
+        addFloater(e.x, e.y - e.r - 8, pierce ? '法术破盾' : '破防', '#ffd89a');
         game.shake = Math.max(game.shake, 9);
         game.hitStop = Math.max(game.hitStop, 0.08);
         addEffect(makeShockwave(e.x, e.y, '#ffe6b0'));
+        if (e.state === 'windup' || e.state === 'active') {
+          e.state = 'stagger';
+          e.stateT = 0;
+          e.hitDone = true;
+        }
       } else {
         const chip = Math.max(1, Math.round(dmg * 0.15));
         e.hp -= chip;

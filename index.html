@@ -424,6 +424,26 @@ const WALLS = [
   { x: 1900, y: 760, w: 44, h: 360 },
 ];
 
+// 点是否落在墙体内（pad 为额外的容差半径）
+function hitWall(px, py, pad) {
+  const p = pad || 0;
+  for (const w of WALLS) {
+    if (px > w.x - p && px < w.x + w.w + p && py > w.y - p && py < w.y + w.h + p) return true;
+  }
+  return false;
+}
+
+// 两点之间是否被墙挡住（用来判断敌人能不能看见你）
+function losBlocked(x1, y1, x2, y2) {
+  const dist = Math.hypot(x2 - x1, y2 - y1);
+  const steps = Math.min(24, Math.ceil(dist / 26));
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    if (hitWall(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, 0)) return true;
+  }
+  return false;
+}
+
 // ---------------- 全局状态 ----------------
 const game = {
   time: 0,
@@ -906,6 +926,10 @@ function updateProjectiles(dt) {
     for (const o of obstacles) {
       if (Math.hypot(s.x - o.x, s.y - o.y) < o.r + s.r * 0.5) s.life = 0;
     }
+    if (hitWall(s.x, s.y, s.r * 0.6)) {
+      s.life = 0;
+      addEffect(makeShockwave(s.x, s.y, '#9be7ff'));
+    }
     if (s.x < 0 || s.y < 0 || s.x > WORLD.w || s.y > WORLD.h) s.life = 0;
     const all = enemies.slice();
     if (boss && !boss.dead && boss.aggro) all.push(boss);
@@ -961,6 +985,10 @@ function updateEProjectiles(dt) {
         addEffect(makeDeathPuff(s.x, s.y, '#8a8f99'));
         break;
       }
+    }
+    if (s.life > 0 && hitWall(s.x, s.y, s.r * 0.6)) {
+      s.life = 0;
+      addEffect(makeDeathPuff(s.x, s.y, '#8a8f99'));
     }
     if (s.life <= 0) continue;
     if (!player.dead && player.invuln <= 0 &&
@@ -1937,7 +1965,7 @@ function updateEnemies(dt) {
       e.facing = e.wanderDir;
       e.x += Math.cos(e.wanderDir) * 26 * dt;
       e.y += Math.sin(e.wanderDir) * 26 * dt;
-      if (d < D().aggro && !player.dead) {
+      if (d < D().aggro && !player.dead && !losBlocked(e.x, e.y, player.x, player.y)) {
         e.aggro = true;
         e.state = 'chase';
         e.stateT = 0;

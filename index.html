@@ -3032,8 +3032,11 @@ function drawWeapon(p, ang) {
     wy = -step * 1.8;
     wrot = Math.sin(ph) * 0.035 * (Math.cos(p.facing) < 0 ? -1 : 1);
   }
-  const ox = p.x + Math.cos(p.facing) * 11 + wx;
-  const oy = p.y + Math.sin(p.facing) * 11 + 7 + wy;
+  // 锚点固定在角色贴图的「右手」上（贴图里手在左侧、离地约 12 单位），
+  // 只让剑的角度绕它转，不再随朝向平移，这样剑柄不会埋进胯部或飘到脚下
+  const flipW = Math.cos(p.facing) < 0 ? -1 : 1;
+  const ox = p.x - 8 * flipW + wx;
+  const oy = p.y - 12 + wy;
   G.save();
   G.translate(ox, oy);
   G.rotate(ang + wrot);

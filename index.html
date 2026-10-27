@@ -103,13 +103,13 @@ const ACTIONS = [
   { id: 'cycle', name: '切换武器', alias: 'q' },
 ];
 const DEFAULT_BINDS = { attack: 'j', roll: 'k', dash: 'shift', block: 'l', spell: 'f', flask: 'r', interact: 'e', lock: 'tab', cycle: 'q' };
-// 移动键永远不能被绑成动作键，否则会出现「按 D 也触发交互」这种串键
+// 动作键可以和移动键共存，但会提示误触风险
 const MOVE_KEYS = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
 function sanitizeBinds(b) {
   const used = new Set();
   for (const a of ACTIONS) {
     let k = b[a.id];
-    if (typeof k !== 'string' || !k || MOVE_KEYS.indexOf(k) >= 0 || used.has(k)) k = DEFAULT_BINDS[a.id];
+    if (typeof k !== 'string' || !k || used.has(k)) k = DEFAULT_BINDS[a.id];
     b[a.id] = k;
     used.add(k);
   }
@@ -122,6 +122,19 @@ try {
 } catch (e) {}
 function saveBinds() {
   try { localStorage.setItem('ashen_binds', JSON.stringify(BINDS)); } catch (e) {}
+  refreshHint();
+}
+// 底部提示条跟随自定义键位实时更新
+function refreshHint() {
+  const el = document.getElementById('hint');
+  if (!el) return;
+  const L = (id) => keyLabel(BINDS[id]);
+  el.textContent =
+    'WASD 移动 · ' + L('attack') + ' 攻击（长弓/铳为射击）· ' + L('cycle') + ' 或 1-8 换武器 · ' +
+    '攻击中接 ' + L('roll') + ' 突进斩 / ' + L('attack') + '→' + L('attack') + '→' + L('roll') + ' 回旋斩 · ' +
+    L('block') + '/右键 举盾格挡（起手瞬间挡中=完美格挡）· ' + L('roll') + ' 翻滚 · ' +
+    L('dash') + ' 冲刺 · ' + L('spell') + ' 复仇之魂 · ' + L('flask') + ' 饮原素瓶 · ' +
+    L('lock') + ' 锁定 · ' + L('interact') + ' 休息 / 交易 · Esc 按键设置 · 滚轮或 +/− 调视野';
 }
 const KEY_LABEL = { ' ': '空格', shift: 'Shift', tab: 'Tab', escape: 'Esc', control: 'Ctrl', alt: 'Alt', arrowup: '↑', arrowdown: '↓', arrowleft: '←', arrowright: '→' };
 function keyLabel(k) { return KEY_LABEL[k] || (k.length === 1 ? k.toUpperCase() : k); }
@@ -130,10 +143,6 @@ function actionOfKey(k) {
   return null;
 }
 function bindKey(id, k) {
-  if (MOVE_KEYS.indexOf(k) >= 0) {
-    if (game.settings) game.settings.msg = '不能绑到移动键 W/A/S/D';
-    return;
-  }
   const owner = actionOfKey(k);
   if (owner && owner.id !== id) {
     const tmp = BINDS[id];
@@ -143,6 +152,11 @@ function bindKey(id, k) {
     BINDS[id] = k;
   }
   saveBinds();
+  if (game.settings && MOVE_KEYS.indexOf(k) >= 0) {
+    game.settings.msg = '已改为 ' + keyLabel(k) + '（注意：它同时是移动键）';
+    return;
+  }
+  if (game.settings) game.settings.msg = '已改为 ' + keyLabel(k);
 }
 
 window.addEventListener('keydown', (e) => {
@@ -4097,7 +4111,7 @@ function drawUI() {
     ctx.textAlign = 'center';
     ctx.font = '15px "Microsoft YaHei", sans-serif';
     ctx.fillStyle = 'rgba(255,220,150,0.92)';
-    ctx.fillText('按 E 与商人交易', W / 2, H - 156);
+    ctx.fillText('按 ' + keyLabel(BINDS.interact) + ' 与商人交易', W / 2, H - 156);
   }
 
   // 商店面板
@@ -4933,6 +4947,7 @@ loadArt();
 resetAll();
 game.state = 'menu';
 game.menuSel = 1;
+refreshHint();
 requestAnimationFrame(loop);
 
 </script>
